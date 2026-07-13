@@ -145,13 +145,18 @@ final class AppState: ObservableObject {
         remoteSource = source
         isBusy = true; defer { isBusy = false }
         do {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             switch source {
             case .nexus:
-                remoteResults = try await NexusClient(apiKey: nexusAPIKey).browse(.trending)
+                // Empty query → trending feed; otherwise full-catalog search via the Nexus search service.
+                let nexus = NexusClient(apiKey: nexusAPIKey)
+                remoteResults = trimmed.isEmpty ? try await nexus.browse(.trending)
+                                                : try await nexus.search(trimmed)
             case .modio:
-                remoteResults = try await ModIOClient(apiKey: modioAPIKey).search(query)
+                remoteResults = try await ModIOClient(apiKey: modioAPIKey).search(trimmed)
             }
-            statusMessage = "\(remoteResults.count) result\(remoteResults.count == 1 ? "" : "s") from \(source.rawValue)."
+            let scope = trimmed.isEmpty ? (source == .nexus ? "trending" : "popular") : "“\(trimmed)”"
+            statusMessage = "\(remoteResults.count) result\(remoteResults.count == 1 ? "" : "s") for \(scope) from \(source.rawValue)."
         } catch {
             statusMessage = error.localizedDescription
             remoteResults = []

@@ -68,42 +68,61 @@ struct LoadOrderView: View {
     @State private var importing = false
     @State private var showingSaveProfile = false
     @State private var newProfileName = ""
+    @State private var filter = ""
 
     var body: some View {
-        HSplitView {
-            // Enabled (ordered)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .top) {
-                    header("Active Load Order", subtitle: "Top loads first · drag to reorder")
-                    Spacer()
-                    Button { state.autoSortByDependencies() } label: {
-                        Label("Auto-sort", systemImage: "wand.and.stars")
-                    }
-                    .help("Reorder so each mod loads after its declared dependencies")
-                    ProfilesMenu(showingSaveProfile: $showingSaveProfile)
-                }
-                .padding(.trailing, 8)
-                List {
-                    ForEach(state.enabledMods) { mod in ModRow(mod: mod, enabled: true) }
-                        .onMove { state.moveEnabled(from: $0, to: $1) }
-                }
-                .listStyle(.inset)
-            }
-            .frame(minWidth: 360)
+        let q = filter.trimmingCharacters(in: .whitespaces)
+        let filtering = !q.isEmpty
+        let enabled = filtering ? state.enabledMods.filter { matches($0, q) } : state.enabledMods
+        let disabled = filtering ? state.disabledMods.filter { matches($0, q) } : state.disabledMods
 
-            // Disabled (available)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    header("Available Mods", subtitle: "Not in load order")
-                    Spacer()
-                    Button { importing = true } label: { Label("Add .pak", systemImage: "plus") }
+        return VStack(spacing: 0) {
+            searchBar
+            HSplitView {
+                // Enabled (ordered)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .top) {
+                        header("Active Load Order",
+                               subtitle: filtering
+                                   ? "Showing \(enabled.count) of \(state.enabledMods.count) · clear filter to reorder"
+                                   : "Top loads first · drag to reorder")
+                        Spacer()
+                        Button { state.autoSortByDependencies() } label: {
+                            Label("Auto-sort", systemImage: "wand.and.stars")
+                        }
+                        .help("Reorder so each mod loads after its declared dependencies")
+                        ProfilesMenu(showingSaveProfile: $showingSaveProfile)
+                    }
+                    .padding(.trailing, 8)
+                    List {
+                        ForEach(enabled) { mod in ModRow(mod: mod, enabled: true) }
+                            .onMove { offsets, dest in
+                                // Positions are only valid against the full list; a filtered view can't
+                                // be safely reordered, so moves are ignored until the filter is cleared.
+                                guard !filtering else { return }
+                                state.moveEnabled(from: offsets, to: dest)
+                            }
+                    }
+                    .listStyle(.inset)
                 }
-                List {
-                    ForEach(state.disabledMods) { mod in ModRow(mod: mod, enabled: false) }
+                .frame(minWidth: 360)
+
+                // Disabled (available)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        header("Available Mods",
+                               subtitle: filtering ? "Showing \(disabled.count) of \(state.disabledMods.count)"
+                                                   : "Not in load order")
+                        Spacer()
+                        Button { importing = true } label: { Label("Add .pak", systemImage: "plus") }
+                    }
+                    List {
+                        ForEach(disabled) { mod in ModRow(mod: mod, enabled: false) }
+                    }
+                    .listStyle(.inset)
                 }
-                .listStyle(.inset)
+                .frame(minWidth: 320)
             }
-            .frame(minWidth: 320)
         }
         .fileImporter(isPresented: $importing,
                       allowedContentTypes: [UTType(filenameExtension: "pak") ?? .data],
@@ -120,6 +139,28 @@ struct LoadOrderView: View {
         } message: {
             Text("Saves the current enabled mods and their order. You can switch back to it any time.")
         }
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Filter installed mods by name or author…", text: $filter)
+                .textFieldStyle(.plain)
+            if !filter.isEmpty {
+                Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Clear filter")
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.quaternary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 10).padding(.vertical, 6)
+    }
+
+    private func matches(_ mod: Mod, _ q: String) -> Bool {
+        mod.displayName.localizedCaseInsensitiveContains(q)
+            || (mod.meta?.author.localizedCaseInsensitiveContains(q) ?? false)
     }
 
     private func header(_ title: String, subtitle: String) -> some View {
@@ -251,13 +292,12 @@ struct BrowseView: View {
             HStack {
                 Picker("Source", selection: $source) {
                     Text("mod.io").tag(RemoteMod.Source.modio)
-                    Text("Nexus (trending)").tag(RemoteMod.Source.nexus)
+                    Text("Nexus Mods").tag(RemoteMod.Source.nexus)
                 }.pickerStyle(.segmented).frame(width: 260)
 
-                TextField(source == .modio ? "Search mod.io…" : "Nexus has no API search — shows trending",
+                TextField(source == .modio ? "Search all of mod.io…" : "Search all of Nexus Mods… (empty = trending)",
                           text: $query)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(source == .nexus)
                     .onSubmit { Task { await state.browse(source, query: query) } }
 
                 Button { Task { await state.browse(source, query: query) } } label: {

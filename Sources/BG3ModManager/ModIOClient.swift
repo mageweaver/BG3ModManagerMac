@@ -38,9 +38,10 @@ struct ModIOClient {
         catch { throw ModIOError.decode }
     }
 
-    /// Search BG3 mods. Empty query returns the most-popular sort.
+    /// Full-text search across ALL BG3 mods on mod.io. `_q` matches the entire catalog server-side
+    /// (not just a page); an empty query returns the most-popular sort. Limit 100 is mod.io's page max.
     func search(_ query: String) async throws -> [RemoteMod] {
-        var q = [URLQueryItem(name: "_limit", value: "30"),
+        var q = [URLQueryItem(name: "_limit", value: "100"),
                  URLQueryItem(name: "_sort", value: "-popular")]
         if !query.trimmingCharacters(in: .whitespaces).isEmpty {
             q.append(URLQueryItem(name: "_q", value: query))

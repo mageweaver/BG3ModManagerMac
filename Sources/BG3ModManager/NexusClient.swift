@@ -2,12 +2,18 @@ import Foundation
 
 /// Thin client for the Nexus Mods public API (https://api.nexusmods.com).
 ///
-/// Auth: a personal API key (Nexus → Account Settings → API Keys). Sent in the `apikey` header.
-/// Note: the public API has no full-text search endpoint (that's website-only), so "browse" surfaces
-/// the trending / latest-added / latest-updated feeds and direct lookups by mod ID. Generating a
-/// download link requires Nexus Premium *or* an `nxm://` handoff from the website for free users.
+/// Auth: a personal API key (Nexus → Account Settings → API Keys). Sent in the `apikey` header for
+/// the v1 endpoints. The v1 API has no full-text search, so `search(_:)` uses the v2 GraphQL API
+/// (`api.nexusmods.com/v2/graphql`) — the same service the Nexus website and Vortex use — which ranks
+/// hits across the entire catalog and needs no key just to search; `browse` still surfaces the
+/// trending / latest feeds. Generating a download link requires Nexus Premium *or* an `nxm://` handoff
+/// from the website for free users.
 struct NexusClient {
     enum Feed: String, CaseIterable { case trending, latestAdded = "latest_added", latestUpdated = "latest_updated" }
+
+    /// Nexus's numeric game id for Baldur's Gate 3 (the v2 GraphQL `gameId` filter keys on this, not
+    /// the `baldursgate3` domain slug the v1 API uses).
+    static let bg3GameID = 3474
 
     enum NexusError: LocalizedError {
         case missingKey, http(Int), decode
@@ -51,6 +57,46 @@ struct NexusClient {
     func browse(_ feed: Feed) async throws -> [RemoteMod] {
         let raw = try await get("games/\(game)/mods/\(feed.rawValue).json", as: [NexusMod].self)
         return raw.map { $0.asRemoteMod }
+    }
+
+    /// Full-text search across ALL Baldur's Gate 3 mods on Nexus, via the v2 GraphQL API.
+    ///
+    /// The v1 API has no search endpoint; the v2 GraphQL `mods` query does a catalog-wide name match
+    /// (WILDCARD = substring) and needs no API key just to search. The chosen result is then installed
+    /// through the normal v1 files / download-link flow. An empty query falls back to the trending feed.
+    func search(_ terms: String) async throws -> [RemoteMod] {
+        let cleaned = terms.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return try await browse(.trending) }
+
+        // Static query + JSON variables so the search terms are escaped safely (no string-built GraphQL).
+        let gql = """
+        query Search($terms: String!, $gameId: String!, $count: Int!) {
+          mods(filter: { op: AND,
+                         name: [{ value: $terms, op: WILDCARD }],
+                         gameId: [{ value: $gameId, op: EQUALS }] },
+               count: $count, offset: 0) {
+            nodes { modId name summary author downloads thumbnailUrl pictureUrl }
+            totalCount
+          }
+        }
+        """
+        let payload: [String: Any] = [
+            "query": gql,
+            "variables": ["terms": cleaned, "gameId": String(Self.bg3GameID), "count": 50]
+        ]
+
+        var req = URLRequest(url: URL(string: "https://api.nexusmods.com/v2/graphql")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("BG3ModManagerMac/1.0", forHTTPHeaderField: "Application-Name")
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw NexusError.decode }
+        guard (200..<300).contains(http.statusCode) else { throw NexusError.http(http.statusCode) }
+        do { return try JSONDecoder().decode(NexusGraphQLResponse.self, from: data).data.mods.nodes.map { $0.asRemoteMod } }
+        catch { throw NexusError.decode }
     }
 
     /// Look up a single mod by its numeric ID.
@@ -98,6 +144,40 @@ struct NexusMod: Decodable {
             thumbnailURL: picture_url.flatMap(URL.init(string:)),
             pageURL: URL(string: "https://www.nexusmods.com/baldursgate3/mods/\(mod_id)"),
             mentionsScriptExtender: ((name ?? "") + " " + summary).lowercased().contains("script extender")
+        )
+    }
+}
+
+// Shape returned by the v2 GraphQL `mods` search query.
+struct NexusGraphQLResponse: Decodable {
+    struct DataField: Decodable { let mods: Mods }
+    struct Mods: Decodable { let nodes: [NexusSearchNode]; let totalCount: Int? }
+    let data: DataField
+}
+
+struct NexusSearchNode: Decodable {
+    let modId: Int
+    let name: String?
+    let summary: String?
+    let author: String?
+    let downloads: Int?
+    let thumbnailUrl: String?
+    let pictureUrl: String?
+
+    var asRemoteMod: RemoteMod {
+        let thumb = (thumbnailUrl ?? pictureUrl).flatMap(URL.init(string:))
+        let cleanSummary = (summary ?? "").decodingHTMLEntities()
+        let summaryText = cleanSummary.isEmpty ? (downloads.map { "\($0) downloads" } ?? "") : cleanSummary
+        return RemoteMod(
+            id: "nexus:\(modId)",
+            source: .nexus,
+            modID: modId,
+            name: name ?? "Mod \(modId)",
+            summary: summaryText,
+            author: author ?? "",
+            thumbnailURL: thumb,
+            pageURL: URL(string: "https://www.nexusmods.com/baldursgate3/mods/\(modId)"),
+            mentionsScriptExtender: ((name ?? "") + " " + (summary ?? "")).lowercased().contains("script extender")
         )
     }
 }
