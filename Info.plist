@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the BG3 Mod Manager macOS app target.
+
+  The CFBundleURLTypes block below is what registers the app as a handler for `nxm://`
+  links, so the "Mod Manager Download" button on the Nexus website hands the download
+  off to this app. This only takes effect when the code is built as a proper .app bundle
+  (an Xcode macOS App target), not as a bare `swift run` executable.
+
+  In Xcode you can instead set this under: Target → Info → URL Types → add scheme "nxm".
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>BG3ModManagerMac</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.bg3modmanagermac</string>
+    <key>CFBundleName</key>
+    <string>BG3 Mod Manager</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Community tool. Not affiliated with Larian, Nexus Mods, mod.io, or CodeWeavers.</string>
+
+    <!-- Register the nxm:// URL scheme so Nexus download handoff reaches this app. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.example.bg3modmanagermac.nxm</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>nxm</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

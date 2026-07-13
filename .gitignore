@@ -1,0 +1,13 @@
+# SwiftPM build output
+.build/
+
+# Assembled app bundle (produced by build_app.sh)
+BG3 Mod Manager.app/
+
+# Xcode
+*.xcodeproj/
+DerivedData/
+xcuserdata/
+
+# macOS
+.DS_Store

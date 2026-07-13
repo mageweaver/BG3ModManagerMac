@@ -1,0 +1,33 @@
+# XcodeGen spec — generates a real BG3ModManagerMac.xcodeproj (app target) from these sources.
+#
+# Install XcodeGen once:   brew install xcodegen
+# Then in this folder:     xcodegen generate && open BG3ModManagerMac.xcodeproj
+#
+# This gives you a standard macOS App target (double-clickable .app, Run/Debug in Xcode) with the
+# nxm:// URL scheme already registered via Info.plist. Prefer this if you want to develop in Xcode;
+# use build_app.sh if you just want the .app from the command line.
+
+name: BG3ModManagerMac
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+targets:
+  BG3ModManagerMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/BG3ModManager
+    settings:
+      base:
+        PRODUCT_NAME: "BG3 Mod Manager"
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.bg3modmanagermac
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.9"
+        ENABLE_HARDENED_RUNTIME: YES
