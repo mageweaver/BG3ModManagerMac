@@ -318,6 +318,68 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Backup / restore (load order + notes + profiles in one file)
+
+    private func currentBackup() -> AppBackup {
+        AppBackup(
+            schema: AppBackup.currentSchema,
+            createdAt: Date(),
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0",
+            environmentLabel: activeEnvironment?.label,
+            loadOrder: LoadOrderProfile(name: "Backup load order",
+                                        environmentID: activeEnvironment?.id,
+                                        mods: enabledMods),
+            notes: notes,
+            profiles: profiles
+        )
+    }
+
+    /// One-click backup: snapshot the load order, notes, and profiles to a timestamped file.
+    @discardableResult
+    func backupNow() -> URL? {
+        let backup = currentBackup()
+        do {
+            let url = try BackupStore.write(backup)
+            statusMessage = "Backed up \(backup.loadOrder.entries.count) mods · \(notes.count) note\(notes.count == 1 ? "" : "s") · \(profiles.count) profile\(profiles.count == 1 ? "" : "s") → \(url.lastPathComponent)"
+            return url
+        } catch {
+            statusMessage = "Backup failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Save a backup to a location the user picks (for sharing / moving machines).
+    func exportBackup(to url: URL) {
+        do {
+            try BackupStore.export(currentBackup(), to: url)
+            statusMessage = "Exported backup to \(url.lastPathComponent)."
+        } catch {
+            statusMessage = "Backup export failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Restore a backup: merge its notes and profiles, then apply its saved load order to installed mods.
+    func importBackup(from url: URL) {
+        let backup: AppBackup
+        do { backup = try BackupStore.read(from: url) }
+        catch { statusMessage = "Couldn't read that backup: \(error.localizedDescription)"; return }
+
+        // Notes: backup entries win; keep any local notes the backup doesn't mention.
+        for (key, text) in backup.notes { notes[key] = text }
+        NotesStore.save(notes)
+
+        // Profiles: add any not already present (by id), so re-importing the same file won't duplicate.
+        let existingIDs = Set(profiles.map { $0.id })
+        let addedProfiles = backup.profiles.filter { !existingIDs.contains($0.id) }
+        profiles.append(contentsOf: addedProfiles)
+        ProfileStore.save(profiles)
+
+        // Load order: enable + order the backed-up mods that are installed here (applyProfile reports
+        // its own count and triggers a refresh; we prime a summary first for the no-install case).
+        statusMessage = "Restored backup · \(backup.notes.count) note\(backup.notes.count == 1 ? "" : "s") merged · \(addedProfiles.count) new profile\(addedProfiles.count == 1 ? "" : "s")."
+        if repo != nil { applyProfile(backup.loadOrder) }
+    }
+
     /// Enable + order exactly the mods named in a profile (those present on disk), disable the rest.
     func applyProfile(_ profile: LoadOrderProfile) {
         guard repo != nil else { statusMessage = "Pick a BG3 install first."; return }

@@ -92,6 +92,7 @@ struct LoadOrderView: View {
                         }
                         .help("Reorder so each mod loads after its declared dependencies")
                         ProfilesMenu(showingSaveProfile: $showingSaveProfile)
+                        BackupMenu()
                     }
                     .padding(.trailing, 8)
                     List {
@@ -325,6 +326,75 @@ struct ProfilesMenu: View {
         panel.prompt = "Import"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         state.importProfile(from: url)
+    }
+}
+
+// MARK: Backup / restore menu
+
+struct BackupMenu: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        Menu {
+            Button { state.backupNow() } label: { Label("Back Up Everything Now", systemImage: "arrow.down.doc.fill") }
+            Button { exportBackup() } label: { Label("Export Backup…", systemImage: "square.and.arrow.up") }
+            Divider()
+            Button { importBackup() } label: { Label("Import Backup…", systemImage: "square.and.arrow.down") }
+
+            let recent = BackupStore.recent()
+            if !recent.isEmpty {
+                Divider()
+                Section("Restore a recent backup") {
+                    ForEach(recent, id: \.self) { url in
+                        Button(readableName(url)) { state.importBackup(from: url) }
+                    }
+                }
+            }
+            Divider()
+            Button { NSWorkspace.shared.open(BackupStore.backupsDir) } label: {
+                Label("Reveal Backups Folder", systemImage: "folder")
+            }
+        } label: {
+            Label("Backup", systemImage: "archivebox")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Back up your load order, notes, and profiles to one file — or restore from a backup")
+    }
+
+    /// "BG3-backup-2026-07-13-142530.bg3backup.json" → "2026-07-13 14:25:30".
+    private func readableName(_ url: URL) -> String {
+        var s = url.lastPathComponent
+        s = s.replacingOccurrences(of: "BG3-backup-", with: "")
+        s = s.replacingOccurrences(of: BackupStore.fileSuffix, with: "")
+        // yyyy-MM-dd-HHmmss → yyyy-MM-dd HH:mm:ss
+        let parts = s.split(separator: "-")
+        if parts.count == 4, parts[3].count == 6 {
+            let t = parts[3]
+            let hh = t.prefix(2), mm = t.dropFirst(2).prefix(2), ss = t.suffix(2)
+            return "\(parts[0])-\(parts[1])-\(parts[2])  \(hh):\(mm):\(ss)"
+        }
+        return s
+    }
+
+    private func exportBackup() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "BG3-backup\(BackupStore.fileSuffix)"
+        panel.message = "Save a portable backup of your load order, notes, and profiles"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        state.exportBackup(to: url)
+    }
+
+    private func importBackup() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose a BG3 backup file to restore"
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        state.importBackup(from: url)
     }
 }
 
