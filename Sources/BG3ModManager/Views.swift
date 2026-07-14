@@ -198,6 +198,7 @@ struct ModRow: View {
                     Label(state.note(for: mod), systemImage: "note.text")
                         .font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(2)
+                        .help(state.note(for: mod))
                 }
             }
             Spacer()
@@ -211,7 +212,7 @@ struct ModRow: View {
                     .foregroundStyle(state.hasNote(mod) ? Color.accentColor : Color.secondary)
             }
             .buttonStyle(.borderless)
-            .help(state.hasNote(mod) ? "Edit note" : "Add note")
+            .help(state.hasNote(mod) ? state.note(for: mod) : "Add note")
             .popover(isPresented: $editingNote, arrowEdge: .bottom) { noteEditor }
 
             Menu {
