@@ -30,6 +30,12 @@ struct Mod: Identifiable, Hashable {
         meta?.name ?? fileURL.deletingPathExtension().lastPathComponent
     }
 
+    /// Stable key for attaching user notes: the UUID when known, else the `.pak` filename. Survives
+    /// refreshes and folder moves (native ↔ CrossOver) better than the full file path.
+    var noteKey: String {
+        meta.map { $0.uuid.lowercased() } ?? fileURL.lastPathComponent.lowercased()
+    }
+
     enum Compatibility: Hashable {
         case ok
         /// Needs the Script Extender, which only works under CrossOver (never on the native Mac build).

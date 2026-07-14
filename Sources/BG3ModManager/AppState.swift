@@ -26,6 +26,9 @@ final class AppState: ObservableObject {
     // Saved load-order profiles.
     @Published var profiles: [LoadOrderProfile] = []
 
+    // Free-form per-mod notes (persisted), keyed by Mod.noteKey.
+    @Published var notes: [String: String] = [:]
+
     // Dependency / compatibility health of the current load order (recomputed on every refresh).
     @Published var healthReport = HealthChecker.Report(issues: [], checkedCount: 0)
 
@@ -43,6 +46,7 @@ final class AppState: ObservableObject {
 
     func bootstrap() {
         profiles = ProfileStore.load()
+        notes = NotesStore.load()
         var envs = EnvironmentLocator.discover()
         if !customDocumentsPath.isEmpty {
             let base = URL(fileURLWithPath: customDocumentsPath)
@@ -91,6 +95,19 @@ final class AppState: ObservableObject {
 
     var enabledMods: [Mod] { mods.filter { $0.isEnabled } }
     var disabledMods: [Mod] { mods.filter { !$0.isEnabled } }
+
+    // MARK: Per-mod notes
+
+    func note(for mod: Mod) -> String { notes[mod.noteKey] ?? "" }
+    func hasNote(_ mod: Mod) -> Bool { !(notes[mod.noteKey] ?? "").isEmpty }
+
+    /// Set (or, when blank, clear) the note for a mod and persist immediately.
+    func setNote(_ text: String, for mod: Mod) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { notes.removeValue(forKey: mod.noteKey) }
+        else { notes[mod.noteKey] = trimmed }
+        NotesStore.save(notes)
+    }
 
     func toggle(_ mod: Mod, on: Bool) {
         guard let idx = mods.firstIndex(of: mod) else { return }

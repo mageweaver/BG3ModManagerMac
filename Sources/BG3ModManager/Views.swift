@@ -144,7 +144,7 @@ struct LoadOrderView: View {
     private var searchBar: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Filter installed mods by name or author…", text: $filter)
+            TextField("Filter installed mods by name, author, or note…", text: $filter)
                 .textFieldStyle(.plain)
             if !filter.isEmpty {
                 Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
@@ -161,6 +161,7 @@ struct LoadOrderView: View {
     private func matches(_ mod: Mod, _ q: String) -> Bool {
         mod.displayName.localizedCaseInsensitiveContains(q)
             || (mod.meta?.author.localizedCaseInsensitiveContains(q) ?? false)
+            || state.note(for: mod).localizedCaseInsensitiveContains(q)
     }
 
     private func header(_ title: String, subtitle: String) -> some View {
@@ -177,6 +178,9 @@ struct ModRow: View {
     let mod: Mod
     let enabled: Bool
 
+    @State private var editingNote = false
+    @State private var draftNote = ""
+
     var body: some View {
         HStack(spacing: 10) {
             Toggle("", isOn: Binding(
@@ -189,10 +193,31 @@ struct ModRow: View {
                 if let author = mod.meta?.author, !author.isEmpty {
                     Text(author).font(.caption).foregroundStyle(.secondary)
                 }
+                if state.hasNote(mod) {
+                    Label(state.note(for: mod), systemImage: "note.text")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             Spacer()
             CompatibilityBadge(mod.compatibility)
+
+            Button {
+                draftNote = state.note(for: mod)
+                editingNote = true
+            } label: {
+                Image(systemName: state.hasNote(mod) ? "note.text" : "square.and.pencil")
+                    .foregroundStyle(state.hasNote(mod) ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(state.hasNote(mod) ? "Edit note" : "Add note")
+            .popover(isPresented: $editingNote, arrowEdge: .bottom) { noteEditor }
+
             Menu {
+                Button(state.hasNote(mod) ? "Edit Note…" : "Add Note…") {
+                    draftNote = state.note(for: mod)
+                    editingNote = true
+                }
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([mod.fileURL])
                 }
@@ -201,6 +226,29 @@ struct ModRow: View {
             .menuStyle(.borderlessButton).frame(width: 28)
         }
         .padding(.vertical, 2)
+    }
+
+    private var noteEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Note").font(.headline)
+            Text(mod.displayName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            TextEditor(text: $draftNote)
+                .font(.body)
+                .frame(width: 320, height: 130)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
+            HStack {
+                Button("Clear", role: .destructive) { draftNote = "" }
+                    .disabled(draftNote.isEmpty)
+                Spacer()
+                Button("Cancel") { editingNote = false }
+                Button("Save") {
+                    state.setNote(draftNote, for: mod)
+                    editingNote = false
+                }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .frame(width: 344)
     }
 }
 
