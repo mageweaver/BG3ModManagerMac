@@ -1,7 +1,23 @@
 # BG3 Mod Manager for Mac — how to use it
 
-A walkthrough from first launch to a modded game with the Script Extender
+A walkthrough from download to a modded game with the Script Extender
 running. If you just want the Script Extender, jump to [§4](#4-install-the-script-extender-one-click).
+
+## 0. Download & open
+
+Grab the app from the [releases page](https://github.com/mageweaver/BG3ModManagerMac/releases/latest)
+(universal — Apple Silicon and Intel, macOS 13+). Unzip, and move
+**BG3 Mod Manager.app** to `/Applications` if you like.
+
+The app is ad-hoc signed, **not notarized**, so macOS blocks the very first
+open with *"from an unidentified developer."* That's expected. Either:
+
+- **Right-click the app → Open → Open** (needed once; afterwards it opens
+  normally), or
+- clear the quarantine flag in Terminal:
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/BG3 Mod Manager.app"
+  ```
 
 ## 1. First launch
 
