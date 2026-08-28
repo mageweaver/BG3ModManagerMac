@@ -42,6 +42,18 @@ and **BG3 running inside CrossOver**.
 
 ---
 
+## Download (no building required)
+
+Grab the app from the [**releases page**](https://github.com/mageweaver/BG3ModManagerMac/releases/latest)
+— a universal build (Apple Silicon + Intel). It's ad-hoc signed, not notarized, so on first
+launch either **right-click → Open → Open**, or clear quarantine:
+
+```bash
+xattr -dr com.apple.quarantine "/path/to/BG3 Mod Manager.app"
+```
+
+Then see the [Tutorial](docs/TUTORIAL.md). To build from source instead, read on.
+
 ## Requirements
 
 - macOS 13 (Ventura) or newer
