@@ -8,7 +8,7 @@ import Compression
 /// decompresses just that one file. It supports LSPK v15/v16/v18 (the versions BG3 ships).
 enum PakReader {
 
-    enum PakError: Error { case notLSPK, unsupportedVersion(UInt32), corrupt, metaNotFound }
+    enum PakError: Error { case notLSPK, unsupportedVersion(UInt32), corrupt, metaNotFound, fileNotFound }
 
     /// Random-access view over a .pak on disk. We never map or read the whole archive — the file list
     /// lives near the end and each payload sits at a known offset, so extracting `meta.lsx` costs a
@@ -37,6 +37,14 @@ enum PakReader {
 
     /// Read and return the raw bytes of `meta.lsx` from a pak, or throw.
     static func extractMetaLSX(from pakURL: URL) throws -> Data {
+        try extractFile(from: pakURL) { $0.hasSuffix("/meta.lsx") || $0 == "meta.lsx" }
+    }
+
+    /// Read one file out of an LSPK archive, chosen by its path.
+    ///
+    /// Savegames (`.lsv`) are LSPK archives too, so the same reader that pulls a mod's `meta.lsx`
+    /// pulls a save's `SaveInfo.json` — no separate format handling needed.
+    static func extractFile(from pakURL: URL, matching: (String) -> Bool) throws -> Data {
         let file = try PakFile(pakURL)
         defer { file.close() }
         guard file.size > 8 else { throw PakError.corrupt }
@@ -48,10 +56,36 @@ enum PakReader {
         }
         let version = header.readU32(at: 4)
         switch version {
-        case 18: return try extractV18(file)
-        case 15, 16: return try extractV15or16(file, version: version)
+        case 18: return try extractV18(file, matching: matching)
+        case 15, 16: return try extractV15or16(file, version: version, matching: matching)
         default: throw PakError.unsupportedVersion(version)
         }
+    }
+
+    /// Whether this file is a real archive rather than a continuation part.
+    ///
+    /// Larian splits a pak once it passes 4 GiB. Only the first file gets a header; the rest are raw
+    /// payload named `Name_1.pak`, `Name_2.pak`, … so they fail every check a pak reader makes. They
+    /// are not mods and must not be listed as such, but the game does need them in the Mods folder.
+    static func isArchive(_ pakURL: URL) -> Bool {
+        guard let file = try? PakFile(pakURL), file.size >= 8 else { return false }
+        defer { file.close() }
+        guard let header = try? file.read(at: 0, count: 4) else { return false }
+        return header[0] == 0x4C && header[1] == 0x53 && header[2] == 0x50 && header[3] == 0x4B
+    }
+
+    /// How many files this archive is split across, from its own header — 1 when it isn't split.
+    ///
+    /// This is why a missing part can be reported precisely rather than guessed at: the pak states
+    /// how many pieces it expects. v15 predates the field, so it always reads as unsplit.
+    static func partCount(of pakURL: URL) -> Int {
+        guard let file = try? PakFile(pakURL), file.size >= 40 else { return 1 }
+        defer { file.close() }
+        guard let header = try? file.read(at: 0, count: 40),
+              header[0] == 0x4C, header[1] == 0x53, header[2] == 0x50, header[3] == 0x4B else { return 1 }
+        let version = header.readU32(at: 4)
+        guard version == 16 || version == 18 else { return 1 }
+        return max(1, Int(header.readU16(at: 38)))
     }
 
     /// List every file path inside a pak (best-effort; supports v18, the format BG3 mods ship in).
@@ -93,7 +127,7 @@ enum PakReader {
 
     // Header (after magic+version): fileListOffset U64, fileListSize U32, flags U8, priority U8,
     // md5[16], numParts U16.
-    private static func extractV18(_ file: PakFile) throws -> Data {
+    private static func extractV18(_ file: PakFile, matching: (String) -> Bool) throws -> Data {
         let entryStride = 256 + 4 + 2 + 1 + 1 + 4 + 4   // = 272 bytes (FileEntry18)
         let table = try readFileTable(file, entryStride: entryStride)
         let numFiles = table.count / entryStride
@@ -101,7 +135,7 @@ enum PakReader {
         for i in 0..<numFiles {
             let base = i * entryStride
             let name = table.readCString(at: base, maxLen: 256)
-            guard name.lowercased().hasSuffix("/meta.lsx") || name.lowercased() == "meta.lsx" else { continue }
+            guard matching(name.lowercased()) else { continue }
 
             let offset1 = UInt64(table.readU32(at: base + 256))
             let offset2 = UInt64(table.readU16(at: base + 260))
@@ -121,7 +155,7 @@ enum PakReader {
     }
 
     // MARK: v15 / v16 (older). Layout differs slightly; entry is 292 bytes with a 256-byte name.
-    private static func extractV15or16(_ file: PakFile, version: UInt32) throws -> Data {
+    private static func extractV15or16(_ file: PakFile, version: UInt32, matching: (String) -> Bool) throws -> Data {
         // FileEntry15/16: Name[256], OffsetInFile U64, SizeOnDisk U64, UncompressedSize U64, ArchivePart U32, Flags U32, Crc U32
         let entryStride = 256 + 8 + 8 + 8 + 4 + 4 + 4   // = 292
         let table = try readFileTable(file, entryStride: entryStride)
@@ -131,7 +165,7 @@ enum PakReader {
             let base = i * entryStride
             guard base + entryStride <= table.count else { break }
             let name = table.readCString(at: base, maxLen: 256)
-            guard name.lowercased().hasSuffix("/meta.lsx") || name.lowercased() == "meta.lsx" else { continue }
+            guard matching(name.lowercased()) else { continue }
             let offset = Int(table.readU64(at: base + 256))
             let sizeOnDisk = Int(table.readU64(at: base + 264))
             let uncompressed = Int(table.readU64(at: base + 272))

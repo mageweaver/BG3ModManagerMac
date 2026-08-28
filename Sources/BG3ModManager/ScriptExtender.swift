@@ -1,16 +1,14 @@
 import Foundation
 
-/// Script Extender support.
+/// Script Extender support for the **CrossOver / Wine** route.
 ///
-/// There is **no native-macOS Script Extender** and there cannot easily be one: the SE injects into
-/// the running game and hooks it at the memory level, which Apple's process-injection protections
-/// (SIP, hardened runtime, code signing) block. The native Mac build of BG3 therefore can never run
-/// SE-dependent mods.
+/// Inside a CrossOver bottle you are running the *Windows* build of BG3, so the *Windows* Script
+/// Extender works — the same way it does under Proton on a Steam Deck. The loader is a `DWrite.dll`
+/// proxy dropped next to `bg3.exe`, plus a Wine DLL override so the bottle loads the native (mod)
+/// DWrite instead of the system one. This type handles that setup.
 ///
-/// **CrossOver is the exception.** Inside a CrossOver/Wine bottle you are running the *Windows* build
-/// of BG3, so the *Windows* Script Extender works — the same way it does under Proton on a Steam Deck.
-/// The loader is a `DWrite.dll` proxy dropped next to `bg3.exe`, plus a Wine DLL override so the
-/// bottle loads the native (mod) DWrite instead of the system one. This type handles that setup.
+/// The native Mac build is handled separately by `ScriptExtenderMac` (BG3SE-macOS), which builds a
+/// dylib and hooks it in through Steam's launch options rather than by injecting a DLL.
 enum ScriptExtender {
 
     /// True if a pak ships Script Extender assets (a `ScriptExtender` folder / config inside it).

@@ -24,8 +24,37 @@ struct GameEnvironment: Identifiable, Hashable, Codable {
     /// The Windows game `bin` folder inside the bottle, if known. Only meaningful for `.crossOver`.
     /// This is where the Script Extender loader (DWrite.dll) is placed.
     var gameBinFolder: URL?
+    /// Root of a built BG3SE-macOS checkout, when one is set up. Only meaningful for `.nativeMac`,
+    /// where it is what makes Script Extender mods possible at all.
+    var macScriptExtenderRoot: URL?
 
     var modsFolder: URL { documentsBase.appendingPathComponent("Mods", isDirectory: true) }
+
+    /// `.../PlayerProfiles` — one folder per profile, plus the profile index file.
+    var playerProfilesFolder: URL {
+        documentsBase.appendingPathComponent("PlayerProfiles", isDirectory: true)
+    }
+
+    /// Profile names that actually exist on disk. Almost always just "Public", but BG3 supports more
+    /// and saves live under whichever one is active.
+    var saveProfiles: [String] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: playerProfilesFolder,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles])) ?? []
+        return contents
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .map(\.lastPathComponent)
+            .sorted { $0 == "Public" ? true : ($1 == "Public" ? false : $0 < $1) }
+    }
+
+    /// Where campaign saves live for a profile. Each save is a folder inside this one.
+    func savesFolder(profile: String) -> URL {
+        playerProfilesFolder
+            .appendingPathComponent(profile, isDirectory: true)
+            .appendingPathComponent("Savegames", isDirectory: true)
+            .appendingPathComponent("Story", isDirectory: true)
+    }
 
     var modSettingsFile: URL {
         documentsBase
@@ -34,8 +63,19 @@ struct GameEnvironment: Identifiable, Hashable, Codable {
             .appendingPathComponent("modsettings.lsx", isDirectory: false)
     }
 
-    /// Whether the Windows Script Extender is a realistic option in this environment.
-    var supportsScriptExtender: Bool { kind == .crossOver && gameBinFolder != nil }
+    /// Whether Script Extender mods can run in this environment.
+    ///
+    /// Two different routes get you there. Under CrossOver you are running the Windows build, so the
+    /// Windows SE loads via a DWrite.dll proxy. On the native Mac build, BG3SE-macOS provides a
+    /// native dylib injected through Steam's launch options — a separate project with a separate
+    /// setup, but the same answer for the user: SE mods work.
+    var supportsScriptExtender: Bool {
+        switch kind {
+        case .crossOver: return gameBinFolder != nil
+        case .nativeMac: return macScriptExtenderRoot != nil
+        case .custom:    return gameBinFolder != nil || macScriptExtenderRoot != nil
+        }
+    }
 }
 
 /// Discovers BG3 installations: the native Mac build and any CrossOver/Wine bottles.

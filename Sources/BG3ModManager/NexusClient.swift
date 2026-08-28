@@ -42,6 +42,19 @@ struct NexusClient {
     private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
         let (data, resp) = try await URLSession.shared.data(for: try request(path))
         guard let http = resp as? HTTPURLResponse else { throw NexusError.decode }
+        await NexusRateLimit.shared.absorb(http)
+        guard (200..<300).contains(http.statusCode) else { throw NexusError.http(http.statusCode) }
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch { throw NexusError.decode }
+    }
+
+    /// Like `get`, but a 404 means "upstream doesn't have this" rather than an error. Used by the
+    /// md5 lookup, where not-found is the ordinary outcome for a mod Nexus doesn't recognise.
+    private func getOptional<T: Decodable>(_ path: String, as type: T.Type) async throws -> T? {
+        let (data, resp) = try await URLSession.shared.data(for: try request(path))
+        guard let http = resp as? HTTPURLResponse else { throw NexusError.decode }
+        await NexusRateLimit.shared.absorb(http)
+        if http.statusCode == 404 { return nil }
         guard (200..<300).contains(http.statusCode) else { throw NexusError.http(http.statusCode) }
         do { return try JSONDecoder().decode(T.self, from: data) }
         catch { throw NexusError.decode }
@@ -111,6 +124,26 @@ struct NexusClient {
         return try await get("games/\(game)/mods/\(modID)/files.json", as: Wrapper.self).files
     }
 
+    /// Identify a local file by its md5. This is how a pak that was already on disk gets linked to
+    /// its Nexus page without the user naming it.
+    ///
+    /// Nexus indexes the md5 of the file *as uploaded*, so this hits for mods distributed as a bare
+    /// `.pak` and misses for mods distributed inside a `.zip` (where the hash is the archive's).
+    /// `nil` means "Nexus doesn't recognise this file", which is a normal answer, not a failure.
+    func identify(md5: String) async throws -> NexusMD5Match? {
+        let results = try await getOptional("games/\(game)/mods/md5_search/\(md5).json",
+                                            as: [NexusMD5Match].self)
+        return results?.first
+    }
+
+    /// Mod ids with upstream activity in the given period ("1d", "1w", "1m").
+    ///
+    /// One request covers the whole game, so an update sweep can ask this first and only look up
+    /// files for mods that actually changed — the difference between a few calls and several hundred.
+    func recentlyUpdated(period: String = "1w") async throws -> [NexusUpdatedEntry] {
+        try await get("games/\(game)/mods/updated.json?period=\(period)", as: [NexusUpdatedEntry].self)
+    }
+
     /// Resolve a direct download URL. Works directly only for Premium accounts; for free accounts the
     /// `key`/`expires` pair from an `nxm://` link must be supplied.
     func downloadLink(modID: Int, fileID: Int, key: String? = nil, expires: Int? = nil) async throws -> URL {
@@ -120,6 +153,53 @@ struct NexusClient {
         let links = try await get(path, as: [Link].self)
         guard let first = links.first, let url = URL(string: first.URI) else { throw NexusError.decode }
         return url
+    }
+}
+
+// MARK: Rate limiting
+
+/// Tracks what Nexus says is left of the request allowance.
+///
+/// Nexus reports the remaining hourly and daily budget on every response. The md5 backfill can want
+/// hundreds of requests, which is more than an hour's allowance, so it reads this to decide when to
+/// stop and pick up later rather than hammering into HTTP 429s.
+actor NexusRateLimit {
+    static let shared = NexusRateLimit()
+
+    private(set) var hourlyRemaining: Int?
+    private(set) var dailyRemaining: Int?
+    private(set) var updatedAt: Date?
+
+    /// Keep a little in reserve so an automatic sweep never spends the user's last requests —
+    /// browsing and downloading should still work right after a backfill pass.
+    private let reserve = 10
+
+    func absorb(_ response: HTTPURLResponse) {
+        func header(_ name: String) -> Int? {
+            (response.value(forHTTPHeaderField: name)).flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        }
+        if let h = header("X-RL-Hourly-Remaining") { hourlyRemaining = h }
+        if let d = header("X-RL-Daily-Remaining") { dailyRemaining = d }
+        if hourlyRemaining != nil || dailyRemaining != nil { updatedAt = Date() }
+    }
+
+    /// Whether another request is worth making. Unknown budget (nothing seen yet) counts as fine —
+    /// the first response will fill it in.
+    var hasBudget: Bool {
+        if let dailyRemaining, dailyRemaining <= reserve { return false }
+        if let hourlyRemaining, hourlyRemaining <= reserve { return false }
+        return true
+    }
+
+    /// Spend one locally so a tight loop throttles without waiting for the next response header.
+    func spend() {
+        if let h = hourlyRemaining { hourlyRemaining = max(0, h - 1) }
+        if let d = dailyRemaining { dailyRemaining = max(0, d - 1) }
+    }
+
+    var summary: String? {
+        guard let hourlyRemaining else { return nil }
+        return "\(hourlyRemaining) Nexus requests left this hour"
     }
 }
 
@@ -180,6 +260,26 @@ struct NexusSearchNode: Decodable {
             mentionsScriptExtender: ((name ?? "") + " " + (summary ?? "")).lowercased().contains("script extender")
         )
     }
+}
+
+/// One hit from `md5_search`: the mod, plus which of its files matched the hash.
+struct NexusMD5Match: Decodable {
+    let mod: NexusMod
+    let file_details: NexusFileDetails
+}
+
+struct NexusFileDetails: Decodable {
+    let file_id: Int
+    let name: String?
+    let version: String?
+    let category_name: String?
+    let md5: String?
+}
+
+struct NexusUpdatedEntry: Decodable {
+    let mod_id: Int
+    let latest_file_update: Int?
+    let latest_mod_activity: Int?
 }
 
 struct NexusFile: Decodable, Identifiable {

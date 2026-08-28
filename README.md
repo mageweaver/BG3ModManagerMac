@@ -5,10 +5,12 @@ A native macOS (SwiftUI) mod manager for **Baldur's Gate 3** that works with bot
 directly, and — crucially — understands the difference between the **native Mac build**
 and **BG3 running inside CrossOver**.
 
-> **The honest bit about the Script Extender:** there is no native-macOS Script Extender,
-> and one isn't realistically buildable (see *Script Extender* below). But if you run the
-> **Windows** build of BG3 in **CrossOver**, the **Windows** Script Extender works — and this
-> app helps you install it. That's the only path to SE-dependent mods on a Mac.
+> **Script Extender — now on native macOS.** There's a native-macOS Script Extender,
+> [**BG3SE-macOS**](https://github.com/mageweaver/bg3se-macos), and this app installs it
+> for you with one click from its **Script Extender** tab — it downloads the pre-built
+> `libbg3se.dylib` straight into the game, no Terminal and no building. (Running the
+> **Windows** build of BG3 in **CrossOver**? The **Windows** Script Extender still works
+> there too, and the app installs that as well.)
 
 ---
 
@@ -95,6 +97,8 @@ Prefer **A** to just get the app, **B** to develop in Xcode.
 > the bottle folders).
 
 ---
+
+> **New here?** See the step-by-step [**Tutorial**](docs/TUTORIAL.md).
 
 ## Using it
 

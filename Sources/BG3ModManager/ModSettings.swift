@@ -9,7 +9,7 @@ enum ModSettings {
         name: "GustavDev", folder: "GustavDev",
         uuid: "28ac9ce2-2aba-8cda-b3b5-6e922f71b6b8",
         md5: "", version64: "36028797018963968", author: "Larian",
-        dependencyUUIDs: [], requiresScriptExtender: false
+        dependencies: [], conflicts: [], requiresScriptExtender: false
     )
 
     // MARK: Read

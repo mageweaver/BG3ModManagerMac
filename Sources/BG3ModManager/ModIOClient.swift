@@ -50,25 +50,70 @@ struct ModIOClient {
         return page.data.map { $0.asRemoteMod }
     }
 
+    /// Look up many mods in one request. mod.io caps a page at 100, so the caller chunks.
+    ///
+    /// Each result carries its current `modfile` — version, file id and md5 — which is everything an
+    /// update check needs, so a few hundred linked mods cost a handful of requests rather than one each.
+    func mods(ids: [Int]) async throws -> [ModIOMod] {
+        guard !ids.isEmpty else { return [] }
+        var out: [ModIOMod] = []
+        for chunk in stride(from: 0, to: ids.count, by: 100).map({ Array(ids[$0..<min($0 + 100, ids.count)]) }) {
+            let q = [URLQueryItem(name: "id-in", value: chunk.map(String.init).joined(separator: ",")),
+                     URLQueryItem(name: "_limit", value: "100")]
+            out += try await get("games/@\(gameNameID)/mods", query: q, as: ModIOPage.self).data
+        }
+        return out
+    }
+
+    /// One page of the whole BG3 catalog, newest first.
+    ///
+    /// Used to build a local md5 index: every mod.io listing exposes its file's md5, so paging the
+    /// catalog once lets any number of local paks be identified offline. That is far cheaper than
+    /// Nexus's per-file lookup, which has no bulk equivalent.
+    func catalogPage(offset: Int, limit: Int = 100) async throws -> ModIOPage {
+        let q = [URLQueryItem(name: "_limit", value: String(limit)),
+                 URLQueryItem(name: "_offset", value: String(offset)),
+                 URLQueryItem(name: "_sort", value: "-date_updated")]
+        return try await get("games/@\(gameNameID)/mods", query: q, as: ModIOPage.self)
+    }
+
     /// Resolve the primary downloadable file URL for a mod.io mod.
     func downloadURL(modID: Int) async throws -> URL {
+        try await primaryFile(modID: modID).url
+    }
+
+    /// The mod's current file: where to get it, and which file it is. The identity matters as much as
+    /// the URL — it is what a later check compares against to decide whether a newer file exists.
+    func primaryFile(modID: Int) async throws -> (url: URL, fileID: Int?, version: String?, filename: String?) {
         let mod = try await get("games/@\(gameNameID)/mods/\(modID)", query: [], as: ModIOMod.self)
         guard let binary = mod.modfile?.download?.binary_url, let url = URL(string: binary) else {
             throw ModIOError.noFile
         }
-        return url
+        return (url, mod.modfile?.id, mod.modfile?.version, mod.modfile?.filename)
     }
 }
 
 // MARK: mod.io JSON shapes
 
-struct ModIOPage: Decodable { let data: [ModIOMod] }
+struct ModIOPage: Decodable {
+    let data: [ModIOMod]
+    let result_count: Int?
+    let result_offset: Int?
+    let result_total: Int?
+}
 
 struct ModIOMod: Decodable {
     struct Logo: Decodable { let thumb_320x180: String? }
     struct SubmittedBy: Decodable { let username: String? }
     struct Download: Decodable { let binary_url: String? }
-    struct ModFile: Decodable { let download: Download? }
+    struct FileHash: Decodable { let md5: String? }
+    struct ModFile: Decodable {
+        let id: Int?
+        let version: String?
+        let filename: String?
+        let filehash: FileHash?
+        let download: Download?
+    }
 
     let id: Int
     let name: String?
@@ -77,6 +122,7 @@ struct ModIOMod: Decodable {
     let logo: Logo?
     let submitted_by: SubmittedBy?
     let modfile: ModFile?
+    let date_updated: Int?
 
     var asRemoteMod: RemoteMod {
         let text = ((name ?? "") + " " + (summary ?? "")).lowercased()

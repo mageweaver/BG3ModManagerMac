@@ -8,10 +8,50 @@ enum Downloader {
         var errorDescription: String? {
             switch self {
             case .http(let c):              return "Download failed (HTTP \(c))."
-            case .noPak:                    return "No .pak file was found in the download."
-            case .unsupportedArchive(let e): return "Can't auto-extract .\(e) archives. Unpack it manually, then add the .pak."
+            case .noPak:                    return "No .pak file was found in the archive."
+            case .unsupportedArchive(let e): return "Can't unpack .\(e) archives. Extract it in Finder, then add the .pak."
             }
         }
+    }
+
+    /// The paks pulled out of an archive, plus the scratch folder holding them so the caller can
+    /// clean up — an unpacked mod can be several GB and shouldn't be left in /tmp.
+    struct Extracted {
+        let paks: [URL]
+        /// nil when the source was already a bare .pak and nothing was unpacked.
+        let workDir: URL?
+    }
+
+    /// Unpack a local archive the user picked — a mod they downloaded from Nexus themselves rather
+    /// than through the manager. Same unpacking as a download, without the network.
+    ///
+    /// The original file is never moved or modified: `unzip` reads it in place.
+    static func paks(inArchiveAt url: URL) throws -> Extracted {
+        let ext = url.pathExtension.lowercased()
+        switch ext {
+        case "pak":
+            return Extracted(paks: [url], workDir: nil)
+        case "zip":
+            let work = try makeWorkDir()
+            return Extracted(paks: try extractZip(url, into: work), workDir: work)
+        case "rar", "7z":
+            throw DownloadError.unsupportedArchive(ext)
+        default:
+            // No useful extension: the bytes may still be a zip.
+            let work = try makeWorkDir()
+            if let found = try? extractZip(url, into: work), !found.isEmpty {
+                return Extracted(paks: found, workDir: work)
+            }
+            try? FileManager.default.removeItem(at: work)
+            throw DownloadError.unsupportedArchive(ext.isEmpty ? "unknown" : ext)
+        }
+    }
+
+    private static func makeWorkDir() throws -> URL {
+        let work = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("BG3MM-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        return work
     }
 
     /// Download `url`, returning the local `.pak` file URLs (in a temp folder the caller can install from).

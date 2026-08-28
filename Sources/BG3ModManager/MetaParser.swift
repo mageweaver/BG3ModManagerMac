@@ -16,7 +16,10 @@ final class MetaParser: NSObject, XMLParserDelegate {
 
     private var nodeStack: [String] = []          // stack of node @id values
     private var info: [String: String] = [:]      // ModuleInfo attributes
-    private var dependencyUUIDs: [String] = []
+    private var dependencies: [ModDependency] = []
+    private var conflicts: [ModDependency] = []
+    /// Attributes of the ModuleShortDesc currently being read; flushed when the node closes.
+    private var pendingDependency: [String: String] = [:]
     private var sawScriptExtenderNode = false
 
     static func parse(_ data: Data) -> ModMeta? {
@@ -31,7 +34,7 @@ final class MetaParser: NSObject, XMLParserDelegate {
         guard !uuid.isEmpty || !folder.isEmpty else { return nil }
 
         let dependsOnSE = p.sawScriptExtenderNode
-            || p.dependencyUUIDs.contains { $0.lowercased().contains("scriptextender") }
+            || p.dependencies.contains { $0.name.lowercased().contains("scriptextender") }
             || name.lowercased().contains("script extender")
 
         return ModMeta(
@@ -41,7 +44,8 @@ final class MetaParser: NSObject, XMLParserDelegate {
             md5: p.info["MD5"] ?? "",
             version64: p.info["Version64"] ?? p.info["Version"] ?? "",
             author: p.info["Author"] ?? "",
-            dependencyUUIDs: p.dependencyUUIDs,
+            dependencies: p.dependencies,
+            conflicts: p.conflicts,
             requiresScriptExtender: dependsOnSE
         )
     }
@@ -63,8 +67,8 @@ final class MetaParser: NSObject, XMLParserDelegate {
             let inDependency = nodeStack.last == "ModuleShortDesc"
             if inModuleInfo {
                 info[id] = value
-            } else if inDependency, id == "UUID" {
-                dependencyUUIDs.append(value)
+            } else if inDependency {
+                pendingDependency[id] = value
             }
         default:
             break
@@ -73,6 +77,25 @@ final class MetaParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement element: String,
                 namespaceURI: String?, qualifiedName: String?) {
-        if element == "node", !nodeStack.isEmpty { nodeStack.removeLast() }
+        guard element == "node", !nodeStack.isEmpty else { return }
+        if nodeStack.last == "ModuleShortDesc" {
+            // meta.lsx uses ModuleShortDesc for two different relationships — <Dependencies> and
+            // <Conflicts> — so the enclosing section decides what this entry means. Reading them
+            // interchangeably turns "don't install this alongside me" into "install this first",
+            // and then reports the conflict as a missing dependency.
+            let section = nodeStack.dropLast().last ?? ""
+            if let uuid = pendingDependency["UUID"], !uuid.isEmpty {
+                let entry = ModDependency(uuid: uuid,
+                                          name: pendingDependency["Name"] ?? "",
+                                          folder: pendingDependency["Folder"] ?? "")
+                switch section {
+                case "Dependencies": dependencies.append(entry)
+                case "Conflicts":    conflicts.append(entry)
+                default:             break
+                }
+            }
+            pendingDependency.removeAll()
+        }
+        nodeStack.removeLast()
     }
 }
