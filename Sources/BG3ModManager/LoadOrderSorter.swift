@@ -36,7 +36,7 @@ enum LoadOrderSorter {
             for depRaw in deps {
                 let dep = depRaw.lowercased()
                 // Base game / self deps don't constrain ordering.
-                if dep == ModSettings.gustavDev.uuid || dep == mod.meta?.uuid.lowercased() { continue }
+                if dep == ModSettings.gustavDevUUID || dep == mod.meta?.uuid.lowercased() { continue }
                 guard let depIdx = uuidToIndex[dep] else {
                     missing.append((mod, depRaw))
                     continue

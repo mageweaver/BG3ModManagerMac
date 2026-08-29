@@ -4,41 +4,40 @@ import Foundation
 /// The order of `<node id="ModuleShortDesc">` entries inside `<node id="Mods">` IS the load order.
 enum ModSettings {
 
-    /// The base-game modules that must lead every load order. GustavDev is the
-    /// main campaign; GustavX is the Patch 8 module. Post-Patch-8 mods declare
-    /// GustavX as a dependency (Deadlier Honour Mode among them), so an order
-    /// written without it leaves those mods unresolved — their content, and in
-    /// the ruleset case their difficulty option, silently never registers.
-    /// Honour/HonourX carry the Honour Mode difficulty: without them the Honour
-    /// tile silently disappears from New Game, taking any Honour-modifying mod
-    /// (Deadlier Honour Mode) with it. All four are always prepended, in this
-    /// order, on every write.
-    static let gustavDev = ModMeta(
-        name: "GustavDev", folder: "GustavDev",
-        uuid: "28ac9ce2-2aba-8cda-b3b5-6e922f71b6b8",
-        md5: "", version64: "36028797018963968", author: "Larian",
-        dependencies: [], conflicts: [], requiresScriptExtender: false
-    )
+    /// Base-game modules. Patch 8 lists GustavX (the campaign), Honour and
+    /// HonourX in modsettings; GustavDev is implicit and the GAME REMOVES any
+    /// GustavDev entry on boot — writing one guarantees the in-game "load
+    /// order has been reset" message. So GustavDev stays in `baseUUIDs` (never
+    /// treated as a user mod, protected from bulk actions) but is NOT written.
+    /// The Version64/MD5 values below are the game's own canonical entries for
+    /// build 4.1.1.7398727, used only as a fallback: `write` prefers the
+    /// entries the game last wrote to the file itself, so a game patch that
+    /// changes them self-heals on the next write.
+    static let gustavDevUUID = "28ac9ce2-2aba-8cda-b3b5-6e922f71b6b8"
     static let gustavX = ModMeta(
         name: "GustavX", folder: "GustavX",
         uuid: "cb555efe-2d9e-131f-8195-a89329d218ea",
-        md5: "", version64: "36028797018963968", author: "Larian",
+        md5: "ef3fcba3f3684b3088ad1f9874d4957c",
+        version64: "145241946983300916", author: "Larian",
         dependencies: [], conflicts: [], requiresScriptExtender: false
     )
     static let honour = ModMeta(
         name: "Honour", folder: "Honour",
         uuid: "b77b6210-ac50-4cb1-a3d5-5702fb9c744c",
-        md5: "", version64: "36028797018963968", author: "Larian",
+        md5: "931dacd8b5fd7a7f39330e72432517d2",
+        version64: "36028797026107188", author: "Larian",
         dependencies: [], conflicts: [], requiresScriptExtender: false
     )
     static let honourX = ModMeta(
         name: "HonourX", folder: "HonourX",
         uuid: "767d0062-d82c-279c-e16b-dfee7fe94cdd",
-        md5: "", version64: "36028797018963968", author: "Larian",
+        md5: "a7986aa127818dab105e831b095419ef",
+        version64: "36028797026107188", author: "Larian",
         dependencies: [], conflicts: [], requiresScriptExtender: false
     )
-    static let baseModules = [gustavDev, gustavX, honour, honourX]
-    static let baseUUIDs: Set<String> = Set(baseModules.map(\.uuid))
+    static let writtenBaseModules = [gustavX, honour, honourX]
+    static let baseUUIDs: Set<String> =
+        Set(writtenBaseModules.map(\.uuid) + [gustavDevUUID])
 
     // MARK: Read
 
@@ -49,7 +48,20 @@ enum ModSettings {
         let parser = XMLParser(data: data)
         parser.delegate = reader
         parser.parse()
-        return reader.entries.filter { !baseUUIDs.contains($0.uuid.lowercased()) }
+        return reader.entries
+            .filter { !baseUUIDs.contains($0.uuid.lowercased()) }
+            .map { (folder: $0.folder, uuid: $0.uuid) }
+    }
+
+    /// All entries as the game last wrote them, base modules included.
+    static func readRawEntries(at url: URL)
+        -> [(folder: String, uuid: String, md5: String, version64: String)] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let reader = OrderReader()
+        let parser = XMLParser(data: data)
+        parser.delegate = reader
+        parser.parse()
+        return reader.entries
     }
 
     // MARK: Write
@@ -67,6 +79,15 @@ enum ModSettings {
 
         // Drop the base module (re-added first) and de-duplicate by UUID, keeping the first occurrence —
         // two different paks can declare the same module UUID, and BG3 must not see it listed twice.
+        // Prefer the base-module entries the game itself last wrote (real
+        // Version64/MD5 for the running patch); fall back to our snapshot.
+        let existing = readRawEntries(at: url)
+        let base = writtenBaseModules.map { fallback in
+            existing.first { $0.uuid.lowercased() == fallback.uuid }
+                .map { fallback.replacingIdentity(folder: $0.folder, md5: $0.md5,
+                                                  version64: $0.version64) }
+                ?? fallback
+        }
         var seen = Set<String>()
         let deduped = mods.filter { m in
             let key = m.uuid.lowercased()
@@ -74,7 +95,7 @@ enum ModSettings {
             seen.insert(key)
             return true
         }
-        let ordered = baseModules + deduped
+        let ordered = base + deduped
         let xml = render(ordered)
         try xml.data(using: .utf8)!.write(to: url, options: .atomic)
     }
@@ -121,11 +142,13 @@ enum ModSettings {
 }
 
 private final class OrderReader: NSObject, XMLParserDelegate {
-    var entries: [(folder: String, uuid: String)] = []
+    var entries: [(folder: String, uuid: String, md5: String, version64: String)] = []
     private var inMods = false
     private var nodeStack: [String] = []
     private var curFolder = ""
     private var curUUID = ""
+    private var curMD5 = ""
+    private var curVersion64 = ""
 
     func parser(_ parser: XMLParser, didStartElement element: String, namespaceURI: String?,
                 qualifiedName: String?, attributes attr: [String: String]) {
@@ -133,12 +156,14 @@ private final class OrderReader: NSObject, XMLParserDelegate {
             let id = attr["id"] ?? ""
             nodeStack.append(id)
             if id == "Mods" { inMods = true }
-            if id == "ModuleShortDesc" { curFolder = ""; curUUID = "" }
+            if id == "ModuleShortDesc" { curFolder = ""; curUUID = ""; curMD5 = ""; curVersion64 = "" }
         } else if element == "attribute", inMods, nodeStack.last == "ModuleShortDesc" {
             let id = attr["id"] ?? ""
             let value = attr["value"] ?? ""
             if id == "Folder" { curFolder = value }
             if id == "UUID" { curUUID = value }
+            if id == "MD5" { curMD5 = value }
+            if id == "Version64" { curVersion64 = value }
         }
     }
 
@@ -147,7 +172,7 @@ private final class OrderReader: NSObject, XMLParserDelegate {
         if element == "node" {
             let id = nodeStack.popLast() ?? ""
             if id == "ModuleShortDesc", inMods, !curUUID.isEmpty {
-                entries.append((curFolder, curUUID))
+                entries.append((curFolder, curUUID, curMD5, curVersion64))
             }
             if id == "Mods" { inMods = false }
         }

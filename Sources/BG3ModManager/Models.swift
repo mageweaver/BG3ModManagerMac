@@ -21,6 +21,16 @@ struct ModMeta: Hashable, Codable {
     /// Mods this one declares itself incompatible with (from the <Conflicts> node). Usually
     /// alternative editions of the same mod — the author expects exactly one to be installed.
     var conflicts: [ModDependency] = []
+    /// A copy carrying identity fields the game itself wrote (real pak
+    /// checksum/version for the running patch); empty values keep our own.
+    func replacingIdentity(folder: String, md5: String, version64: String) -> ModMeta {
+        var c = self
+        if !folder.isEmpty { c.folder = folder }
+        if !md5.isEmpty { c.md5 = md5 }
+        if !version64.isEmpty { c.version64 = version64 }
+        return c
+    }
+
     /// Just the UUIDs, for the ordering code that only cares about identity.
     var dependencyUUIDs: [String] { dependencies.map(\.uuid) }
     /// True if the meta references the Script Extender (ScriptExtender config node or a known SE dependency).
