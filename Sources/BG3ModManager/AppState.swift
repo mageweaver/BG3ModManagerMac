@@ -691,6 +691,13 @@ final class AppState: ObservableObject {
     /// The order itself is the part that's expensive to recreate — a hand-tuned sequence of hundreds
     /// of mods — so it is saved as a profile first. Re-enabling is then one click in the Profiles
     /// menu rather than a rebuild from memory.
+    /// A base-game module (GustavDev, GustavX, Honour, …) that bulk actions must
+    /// never disable or delete — matched by the mod's meta UUID and name.
+    static func isBaseGameMod(_ mod: Mod) -> Bool {
+        BaseGameModules.isBaseGame(uuid: mod.meta?.uuid ?? mod.moduleUUID ?? "",
+                                   name: mod.meta?.name ?? mod.displayName)
+    }
+
     func deactivateAllMods() {
         guard !isScanningMods else {
             statusMessage = "Still scanning the Mods folder. Wait for the scan to finish."
@@ -710,12 +717,25 @@ final class AppState: ObservableObject {
             ProfileStore.save(profiles)
         }
 
-        for index in mods.indices { mods[index].isEnabled = false }
+        // Never disable base-game modules (GustavDev, GustavX, Honour, …). They
+        // are not mods; disabling GustavDev in particular strips the main
+        // campaign, and dependent mods (e.g. ruleset mods that modify Honour
+        // mode) then silently fail to register. "Disable all" means "all MODS".
+        var protectedCount = 0
+        for index in mods.indices {
+            if Self.isBaseGameMod(mods[index]) {
+                protectedCount += 1
+                continue
+            }
+            mods[index].isEnabled = false
+        }
         applyOrder()
 
+        let disabled = count - protectedCount
+        let kept = protectedCount > 0 ? " (kept \(protectedCount) base-game module\(protectedCount == 1 ? "" : "s"))" : ""
         statusMessage = snapshot.entries.isEmpty
-            ? "Disabled \(count) mod\(count == 1 ? "" : "s"). The paks are still installed."
-            : "Disabled \(count) mod\(count == 1 ? "" : "s") · saved “\(snapshot.name)” so you can put the order back."
+            ? "Disabled \(disabled) mod\(disabled == 1 ? "" : "s")\(kept). The paks are still installed."
+            : "Disabled \(disabled) mod\(disabled == 1 ? "" : "s")\(kept) · saved “\(snapshot.name)” so you can put the order back."
     }
 
     /// Delete every installed pak.
@@ -729,7 +749,10 @@ final class AppState: ObservableObject {
             statusMessage = "Still scanning the Mods folder. Wait for the scan to finish."
             return
         }
-        let targets = mods
+        // Exclude base-game modules from a bulk delete for the same reason as
+        // "disable all" — they are the game, not mods. (Base modules are almost
+        // never .pak files in the Mods folder, but if one is, do not trash it.)
+        let targets = mods.filter { !Self.isBaseGameMod($0) }
         guard !targets.isEmpty else { statusMessage = "There are no mods to delete."; return }
 
         let freed = installedBytes
@@ -750,10 +773,10 @@ final class AppState: ObservableObject {
         }
         saveRecords()
 
-        // The load order still names mods that no longer exist; clear it rather than leave the game
-        // pointed at missing UUIDs.
-        mods = []
-        do { try repo.applyLoadOrder([]) }
+        // The load order still names the deleted mods; keep only the base
+        // modules that were never deleted, and re-write the order from those.
+        mods = mods.filter { Self.isBaseGameMod($0) }
+        do { try repo.applyLoadOrder(mods) }
         catch { statusMessage = "Deleted the paks, but couldn't clear the load order: \(error.localizedDescription)" }
 
         let size = ByteCountFormatter.string(fromByteCount: freed, countStyle: .file)
