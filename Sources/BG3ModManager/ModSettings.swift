@@ -4,13 +4,26 @@ import Foundation
 /// The order of `<node id="ModuleShortDesc">` entries inside `<node id="Mods">` IS the load order.
 enum ModSettings {
 
-    /// The base-game module. Most load orders list it first; we always keep it at the top.
+    /// The base-game modules that must lead every load order. GustavDev is the
+    /// main campaign; GustavX is the Patch 8 module. Post-Patch-8 mods declare
+    /// GustavX as a dependency (Deadlier Honour Mode among them), so an order
+    /// written without it leaves those mods unresolved — their content, and in
+    /// the ruleset case their difficulty option, silently never registers.
+    /// Both are always prepended, in this order, on every write.
     static let gustavDev = ModMeta(
         name: "GustavDev", folder: "GustavDev",
         uuid: "28ac9ce2-2aba-8cda-b3b5-6e922f71b6b8",
         md5: "", version64: "36028797018963968", author: "Larian",
         dependencies: [], conflicts: [], requiresScriptExtender: false
     )
+    static let gustavX = ModMeta(
+        name: "GustavX", folder: "GustavX",
+        uuid: "cb555efe-2d9e-131f-8195-a89329d218ea",
+        md5: "", version64: "36028797018963968", author: "Larian",
+        dependencies: [], conflicts: [], requiresScriptExtender: false
+    )
+    static let baseModules = [gustavDev, gustavX]
+    static let baseUUIDs: Set<String> = [gustavDev.uuid, gustavX.uuid]
 
     // MARK: Read
 
@@ -21,7 +34,7 @@ enum ModSettings {
         let parser = XMLParser(data: data)
         parser.delegate = reader
         parser.parse()
-        return reader.entries.filter { $0.uuid.lowercased() != gustavDev.uuid }
+        return reader.entries.filter { !baseUUIDs.contains($0.uuid.lowercased()) }
     }
 
     // MARK: Write
@@ -42,11 +55,11 @@ enum ModSettings {
         var seen = Set<String>()
         let deduped = mods.filter { m in
             let key = m.uuid.lowercased()
-            guard key != gustavDev.uuid, !seen.contains(key) else { return false }
+            guard !baseUUIDs.contains(key), !seen.contains(key) else { return false }
             seen.insert(key)
             return true
         }
-        let ordered = [gustavDev] + deduped
+        let ordered = baseModules + deduped
         let xml = render(ordered)
         try xml.data(using: .utf8)!.write(to: url, options: .atomic)
     }
