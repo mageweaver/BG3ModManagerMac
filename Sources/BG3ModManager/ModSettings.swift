@@ -9,7 +9,10 @@ enum ModSettings {
     /// GustavX as a dependency (Deadlier Honour Mode among them), so an order
     /// written without it leaves those mods unresolved — their content, and in
     /// the ruleset case their difficulty option, silently never registers.
-    /// Both are always prepended, in this order, on every write.
+    /// Honour/HonourX carry the Honour Mode difficulty: without them the Honour
+    /// tile silently disappears from New Game, taking any Honour-modifying mod
+    /// (Deadlier Honour Mode) with it. All four are always prepended, in this
+    /// order, on every write.
     static let gustavDev = ModMeta(
         name: "GustavDev", folder: "GustavDev",
         uuid: "28ac9ce2-2aba-8cda-b3b5-6e922f71b6b8",
@@ -22,8 +25,20 @@ enum ModSettings {
         md5: "", version64: "36028797018963968", author: "Larian",
         dependencies: [], conflicts: [], requiresScriptExtender: false
     )
-    static let baseModules = [gustavDev, gustavX]
-    static let baseUUIDs: Set<String> = [gustavDev.uuid, gustavX.uuid]
+    static let honour = ModMeta(
+        name: "Honour", folder: "Honour",
+        uuid: "b77b6210-ac50-4cb1-a3d5-5702fb9c744c",
+        md5: "", version64: "36028797018963968", author: "Larian",
+        dependencies: [], conflicts: [], requiresScriptExtender: false
+    )
+    static let honourX = ModMeta(
+        name: "HonourX", folder: "HonourX",
+        uuid: "767d0062-d82c-279c-e16b-dfee7fe94cdd",
+        md5: "", version64: "36028797018963968", author: "Larian",
+        dependencies: [], conflicts: [], requiresScriptExtender: false
+    )
+    static let baseModules = [gustavDev, gustavX, honour, honourX]
+    static let baseUUIDs: Set<String> = Set(baseModules.map(\.uuid))
 
     // MARK: Read
 
