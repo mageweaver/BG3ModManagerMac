@@ -29,11 +29,12 @@ struct MacFixView: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Mac Compatibility").font(.headline)
-                Text("Mods built with the Windows toolkit ship shaders for DX11/DX12/Vulkan only. "
-                     + "BG3 on the Mac renders with Metal, so the game hangs the first time such a "
-                     + "mod's hair, armor or character actually appears. The fix removes the mod's "
-                     + "Windows-only material overrides so the game falls back to its own Metal "
-                     + "shaders — the mod keeps its models and content, rendered with standard shading.")
+                Text("Materials exported by the Windows toolkit lack the MetalReady marker the "
+                     + "Mac renderer requires, and their shaders ship for DX11/DX12/Vulkan only — "
+                     + "the game hangs or renders invisible meshes when such a mod's content "
+                     + "appears. The fix replaces each broken material with the game's own "
+                     + "MetalReady version of the same material, keeping the mod's models and "
+                     + "custom textures intact.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -103,12 +104,13 @@ struct MacFixView: View {
 
     private func detailLine(for r: ShaderCompatFixer.ScanResult) -> String {
         if state.fixedShaderPaks.contains(r.pakURL.path) || !r.affected {
-            return "Fixed — using base-game Metal shaders. Original backed up."
+            return "Fixed — materials replaced with the game's MetalReady versions. Original backed up."
         }
         let plats = r.platforms.sorted().joined(separator: "/")
-        var line = "\(r.shaderCount) Windows-only shaders (\(plats)), \(r.materials.count) material\(r.materials.count == 1 ? "" : "s")"
+        let broken = r.materials.filter { !$0.metalReady }.count
+        var line = "\(r.shaderCount) Windows-only shaders (\(plats)), \(broken) non-MetalReady material\(broken == 1 ? "" : "s")"
         if r.fixable {
-            line += " — all override base-game materials, safe to fix"
+            line += " — all match base-game materials, safe to fix"
         } else if r.customMaterialCount > 0 {
             line += " — \(r.customMaterialCount) custom material\(r.customMaterialCount == 1 ? "" : "s") with no base-game fallback; can't auto-fix"
         } else {

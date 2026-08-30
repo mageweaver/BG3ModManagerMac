@@ -38,6 +38,7 @@ final class ShaderCompatFixerTests: XCTestCase {
         for m in result.materials {
             XCTAssertNotNil(m.materialID, "\(m.baseName) should yield a MaterialID")
             XCTAssertTrue(m.overridesBaseGame, "\(m.baseName) should match its base-game UUID")
+            XCTAssertFalse(m.metalReady, "\(m.baseName) is a Windows export; must lack MetalReady")
         }
         XCTAssertTrue(result.fixable)
     }
@@ -55,13 +56,17 @@ final class ShaderCompatFixerTests: XCTestCase {
         try fm.copyItem(at: pak, to: copy)
         let result = try XCTUnwrap(ShaderCompatFixer.scan(pakURL: copy, materialsPak: materialsPak))
         let backupDir = work.appendingPathComponent("backups")
-        try ShaderCompatFixer.fix(result, backupDir: backupDir)
+        try ShaderCompatFixer.fix(result, backupDir: backupDir, materialsPak: materialsPak!)
 
-        // The rewritten pak parses, lost exactly the shader set, and kept its identity.
+        // Nothing removed: same file table, materials swapped for MetalReady
+        // base versions in place, DX shader blobs left inert.
         let names = PakReader.fileNames(from: copy)
-        XCTAssertEqual(names.count, 1836 - 92)
-        XCTAssertFalse(names.contains { $0.hasSuffix(".bshd") })
-        XCTAssertFalse(names.contains { $0.hasSuffix("CHAR_Hair.lsf") })
+        XCTAssertEqual(names.count, 1836)
+        XCTAssertTrue(names.contains { $0.hasSuffix("CHAR_Hair.lsf") })
+        for mat in ["char_hair.lsf", "char_skin_head_v3.lsf"] {
+            let d = try PakReader.extractFile(from: copy) { $0.hasSuffix(mat) }
+            XCTAssertNotNil(d.range(of: Data("MetalReady".utf8)), "\(mat) must be MetalReady after fix")
+        }
         let meta = try PakReader.extractMetaLSX(from: copy)
         XCTAssertTrue(String(decoding: meta, as: UTF8.self)
             .contains("9c2fcd63-823c-0dcb-71ff-cb60e9ff00f7"))

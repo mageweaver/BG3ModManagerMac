@@ -118,9 +118,9 @@ The **Mac Fix** tab finds these before they bite:
 1. Click **Scan Installed Mods**. Every `.pak` in your Mods folder is checked
    for Windows-only compiled shaders.
 2. Mods marked **safe to fix** override base-game materials — one click on
-   **Fix** (or **Fix All**) removes the Windows-only override so the game uses
-   its own Metal shaders instead. The mod keeps all its models and content,
-   rendered with standard shading. The original pak is backed up automatically
+   **Fix** (or **Fix All**) replaces each broken material with the game's own
+   Metal-ready version of the same material, keeping the mod's models and
+   custom textures intact. The original pak is backed up automatically
    (`~/Library/Application Support/BG3ModManagerMac/ShaderFixBackups`), and
    **Restore Original** puts it back any time.
 3. Mods flagged red carry fully custom materials with no base-game fallback;

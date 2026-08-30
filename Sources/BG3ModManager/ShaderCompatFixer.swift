@@ -29,6 +29,8 @@ enum ShaderCompatFixer {
         let baseName: String        // e.g. CHAR_Hair.lsf
         let materialID: String?     // UUID extracted from the LSF, if found
         let overridesBaseGame: Bool // base game has a same-named material with the same UUID
+        let metalReady: Bool        // the material carries the MetalReady marker
+        let basePath: String?       // the base-game material path (for replacement)
     }
 
     struct ScanResult: Identifiable {
@@ -39,13 +41,21 @@ enum ShaderCompatFixer {
         let platforms: Set<String>
         let materials: [MaterialInfo]
 
-        /// Ships compiled shaders but no Metal build of them.
-        var affected: Bool { shaderCount > 0 && !platforms.contains("Metal") }
-        /// Every material is a base-game override, so stripping is a clean fallback.
-        var fixable: Bool {
-            affected && !materials.isEmpty && materials.allSatisfy(\.overridesBaseGame)
+        /// Carries a material the Mac renderer will refuse: exported by the
+        /// Windows toolkit (no MetalReady marker), typically alongside
+        /// DX11/DX12/Vulkan-only compiled shaders.
+        var affected: Bool {
+            shaderCount > 0 && !platforms.contains("Metal")
+                && materials.contains { !$0.metalReady }
         }
-        var customMaterialCount: Int { materials.filter { !$0.overridesBaseGame }.count }
+        /// Every broken material is an override of a base-game material, so it
+        /// can be replaced in place with the game's own MetalReady version.
+        var fixable: Bool {
+            affected && materials.filter { !$0.metalReady }.allSatisfy(\.overridesBaseGame)
+        }
+        var customMaterialCount: Int {
+            materials.filter { !$0.metalReady && !$0.overridesBaseGame }.count
+        }
     }
 
     enum FixError: LocalizedError {
@@ -122,17 +132,22 @@ enum ShaderCompatFixer {
                 let base = (path as NSString).lastPathComponent
                 var overrides = false
                 var modID: String? = nil
-                if let basePath = index[base],
-                   let modData = try? PakReader.extractFile(from: pakURL,
-                                                            matching: { $0 == path.lowercased() }),
-                   let baseData = try? PakReader.extractFile(from: materialsPak,
-                                                              matching: { $0 == basePath.lowercased() }) {
+                var metalReady = false
+                let basePath = index[base]
+                if let modData = try? PakReader.extractFile(from: pakURL,
+                                                            matching: { $0 == path.lowercased() }) {
+                    metalReady = modData.range(of: Data("MetalReady".utf8)) != nil
                     modID = extractMaterialID(fromLSF: modData)
-                    let baseID = extractMaterialID(fromLSF: baseData)
-                    overrides = (modID != nil && modID == baseID)
+                    if let basePath,
+                       let baseData = try? PakReader.extractFile(from: materialsPak,
+                                                                  matching: { $0 == basePath.lowercased() }) {
+                        let baseID = extractMaterialID(fromLSF: baseData)
+                        overrides = (modID != nil && modID == baseID)
+                    }
                 }
                 materials.append(MaterialInfo(path: path, baseName: base,
-                                              materialID: modID, overridesBaseGame: overrides))
+                                              materialID: modID, overridesBaseGame: overrides,
+                                              metalReady: metalReady, basePath: basePath))
             }
         }
 
@@ -166,38 +181,52 @@ enum ShaderCompatFixer {
 
     // MARK: - Fix
 
-    /// Strip the Windows-only shader set from a fixable pak, in place, after
-    /// backing up the original. Returns the backup location.
+    /// Repair a fixable pak in place: every non-MetalReady material override
+    /// is replaced, at its own path, with the base game's MetalReady version of
+    /// the same material. Meshes keep their custom textures (bound by the
+    /// mod's material instances), the Windows-only .bshd blobs become inert
+    /// (the Mac renderer resolves `_Metal` shaders from the base game), and
+    /// nothing is removed — a mesh whose material file disappears renders
+    /// invisible, which is why the old strip approach was wrong. The original
+    /// pak is backed up first. Returns the backup location.
     @discardableResult
-    static func fix(_ result: ScanResult, backupDir: URL) throws -> URL {
+    static func fix(_ result: ScanResult, backupDir: URL, materialsPak: URL) throws -> URL {
         precondition(result.fixable, "fix() requires a fixable scan result")
         let fm = FileManager.default
         try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
 
-        let strippedMaterials = Set(result.materials.map { $0.path.lowercased() })
+        // Base-game payloads for every material being replaced.
+        var replacements: [String: Data] = [:]   // lowercased pak path -> payload
+        for m in result.materials where !m.metalReady && m.overridesBaseGame {
+            guard let basePath = m.basePath,
+                  let payload = try? PakReader.extractFile(from: materialsPak,
+                                                            matching: { $0 == basePath.lowercased() }),
+                  payload.range(of: Data("MetalReady".utf8)) != nil else {
+                throw FixError.verifyFailed("no MetalReady base material for \(m.baseName)")
+            }
+            replacements[m.path.lowercased()] = payload
+        }
+
         let tmp = result.pakURL.deletingLastPathComponent()
             .appendingPathComponent(".\(result.pakURL.lastPathComponent).macfix.tmp")
         defer { try? fm.removeItem(at: tmp) }
 
-        let dropped = try rewrite(src: result.pakURL, dst: tmp) { name in
-            let lower = name.lowercased()
-            if lower.hasSuffix(".bshd") { return true }
-            return strippedMaterials.contains(lower)
-        }
+        try rewrite(src: result.pakURL, dst: tmp, replacing: { replacements[$0.lowercased()] })
 
-        // Validate the rewrite before touching the original: parseable, the
-        // dropped files are gone, and the mod's identity (meta.lsx) survived.
+        // Validate before touching the original: parseable, identity intact,
+        // and every replaced material now reads back MetalReady.
         let newNames = PakReader.fileNames(from: tmp)
-        guard !newNames.isEmpty else { throw FixError.verifyFailed("empty file table") }
-        if newNames.contains(where: { $0.hasSuffix(".bshd") }) {
-            throw FixError.verifyFailed("shader files remain")
-        }
+        guard newNames.count == PakReader.fileNames(from: result.pakURL).count,
+              !newNames.isEmpty else { throw FixError.verifyFailed("file table changed size") }
         let hadMeta = (try? PakReader.extractMetaLSX(from: result.pakURL)) != nil
         if hadMeta, (try? PakReader.extractMetaLSX(from: tmp)) == nil {
             throw FixError.verifyFailed("meta.lsx unreadable after rewrite")
         }
-        guard dropped == result.shaderCount + result.materials.count else {
-            throw FixError.verifyFailed("expected to drop \(result.shaderCount + result.materials.count) files, dropped \(dropped)")
+        for (path, _) in replacements {
+            guard let d = try? PakReader.extractFile(from: tmp, matching: { $0 == path }),
+                  d.range(of: Data("MetalReady".utf8)) != nil else {
+                throw FixError.verifyFailed("replacement did not take for \(path)")
+            }
         }
 
         let backup = backupDir.appendingPathComponent(result.pakURL.lastPathComponent)
@@ -229,11 +258,11 @@ enum ShaderCompatFixer {
 
     // MARK: - LSPK v18 writer
 
-    /// Rebuild an LSPK v18 pak without the entries `dropping` matches. Kept
-    /// payloads are copied byte-for-byte (compression preserved); only the
-    /// entry offsets and the header's file-list fields change. Returns how
-    /// many entries were dropped.
-    private static func rewrite(src: URL, dst: URL, dropping: (String) -> Bool) throws -> Int {
+    /// Rebuild an LSPK v18 pak, substituting the payload of any entry for
+    /// which `replacing` returns data (stored uncompressed at the same path).
+    /// All other payloads are copied byte-for-byte; only offsets, the sizes of
+    /// replaced entries, and the header's file-list fields change.
+    private static func rewrite(src: URL, dst: URL, replacing: (String) -> Data?) throws {
         let inHandle = try FileHandle(forReadingFrom: src)
         defer { try? inHandle.close() }
         let fileSize = Int(try inHandle.seekToEnd())
@@ -266,47 +295,49 @@ enum ShaderCompatFixer {
         FileManager.default.createFile(atPath: dst.path, contents: nil)
         let out = try FileHandle(forWritingTo: dst)
         defer { try? out.close() }
-        try out.write(contentsOf: Data(count: 40))   // header placeholder
+        try out.write(contentsOf: Data(count: 40))
 
         var newTable = Data()
         newTable.reserveCapacity(table.count)
-        var droppedCount = 0
         var writeOffset = 40
 
         for i in 0..<numFiles {
             let base = i * stride
             var entry = table.subdata(in: base ..< base + stride)
             let name = entry.readCString(at: 0, maxLen: 256)
-            if dropping(name) { droppedCount += 1; continue }
 
-            let oldOffset = Int(UInt64(entry.readU32(at: 256)) | (UInt64(entry.readU16(at: 260)) << 32))
-            let sizeOnDisk = Int(entry.readU32(at: 264))
-            let uncompressed = Int(entry.readU32(at: 268))
-            let bytesOnDisk = sizeOnDisk != 0 ? sizeOnDisk : uncompressed
-
-            let blob = try read(at: oldOffset, count: bytesOnDisk)
+            let blob: Data
+            if let replacement = replacing(name) {
+                blob = replacement
+                entry[263] = 0                                   // stored
+                entry.putU32(UInt32(replacement.count), at: 264) // size on disk
+                entry.putU32(UInt32(replacement.count), at: 268) // uncompressed
+            } else {
+                let oldOffset = Int(UInt64(entry.readU32(at: 256)) | (UInt64(entry.readU16(at: 260)) << 32))
+                let sizeOnDisk = Int(entry.readU32(at: 264))
+                let uncompressed = Int(entry.readU32(at: 268))
+                let bytesOnDisk = sizeOnDisk != 0 ? sizeOnDisk : uncompressed
+                blob = try read(at: oldOffset, count: bytesOnDisk)
+            }
             try out.write(contentsOf: blob)
-
             entry.putU32(UInt32(writeOffset & 0xFFFF_FFFF), at: 256)
             entry.putU16(UInt16((writeOffset >> 32) & 0xFFFF), at: 260)
             newTable.append(entry)
-            writeOffset += bytesOnDisk
+            writeOffset += blob.count
         }
 
         let newCompressed = try lz4BlockCompress(newTable)
         var listSection = Data()
-        listSection.appendU32(UInt32(newTable.count / stride))
+        listSection.appendU32(UInt32(numFiles))
         listSection.appendU32(UInt32(newCompressed.count))
         listSection.append(newCompressed)
         try out.write(contentsOf: listSection)
 
-        // Header: keep flags/priority/md5/numParts, update the list fields.
         var newHeader = header
         newHeader.putU64(UInt64(writeOffset), at: 8)
         newHeader.putU32(UInt32(8 + newCompressed.count), at: 16)
         try out.seek(toOffset: 0)
         try out.write(contentsOf: newHeader)
-        return droppedCount
     }
 
     private static func lz4BlockCompress(_ input: Data) throws -> Data {

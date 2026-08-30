@@ -1355,7 +1355,7 @@ final class AppState: ObservableObject {
     }
 
     func fixShaderCompat(_ result: ShaderCompatFixer.ScanResult) {
-        guard result.fixable else { return }
+        guard result.fixable, let materialsPak = baseMaterialsPak else { return }
         let backupDir = Self.shaderFixBackupDir
         let materials = baseMaterialsPak
         isBusy = true
@@ -1363,7 +1363,7 @@ final class AppState: ObservableObject {
             var message: String
             var rescanned: ShaderCompatFixer.ScanResult? = nil
             do {
-                try ShaderCompatFixer.fix(result, backupDir: backupDir)
+                try ShaderCompatFixer.fix(result, backupDir: backupDir, materialsPak: materialsPak)
                 rescanned = ShaderCompatFixer.scan(pakURL: result.pakURL, materialsPak: materials)
                 message = "Fixed \(result.displayName) — original backed up."
             } catch {
@@ -1384,7 +1384,7 @@ final class AppState: ObservableObject {
 
     func fixAllShaderCompat() {
         let targets = shaderScanResults.filter { $0.fixable && !fixedShaderPaks.contains($0.pakURL.path) }
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty, let materialsPak = baseMaterialsPak else { return }
         let backupDir = Self.shaderFixBackupDir
         let materials = baseMaterialsPak
         isBusy = true
@@ -1394,7 +1394,7 @@ final class AppState: ObservableObject {
             var updates: [ShaderCompatFixer.ScanResult] = []
             for t in targets {
                 do {
-                    try ShaderCompatFixer.fix(t, backupDir: backupDir)
+                    try ShaderCompatFixer.fix(t, backupDir: backupDir, materialsPak: materialsPak)
                     if let r = ShaderCompatFixer.scan(pakURL: t.pakURL, materialsPak: materials), !r.affected {
                         updates.append(r); fixedCount += 1
                     }
