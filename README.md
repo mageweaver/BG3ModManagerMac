@@ -27,6 +27,10 @@ and **BG3 running inside CrossOver**.
 - **Flags Script Extender mods.** On the native Mac build they're marked clearly as
   incompatible instead of silently failing. In a CrossOver bottle, it offers to install the
   SE loader for you.
+- **Mac Fix: repairs Windows-only mods.** Visual mods built with the Windows toolkit ship
+  shaders for DX11/DX12/Vulkan but not Metal, which hangs the native Mac build the moment their
+  content appears. The Mac Fix tab detects every such mod and repairs the safe ones in one click
+  (automatic backups, one-click restore); the rest are flagged so nothing hangs you by surprise.
 - **Detects file conflicts.** Scans your enabled load order for mods that ship the same in-game
   file and shows which mod wins (the one lower in the order) and which it overrides.
 - **Auto-sorts by dependencies.** One click reorders the load order so every mod loads after the

@@ -13,6 +13,11 @@ let package = Package(
         .executableTarget(
             name: "BG3ModManagerMac",
             path: "Sources/BG3ModManager"
+        ),
+        .testTarget(
+            name: "BG3ModManagerTests",
+            dependencies: ["BG3ModManagerMac"],
+            path: "Tests/BG3ModManagerTests"
         )
     ]
 )

@@ -105,13 +105,39 @@ compile BG3SE-macOS against the game binary themselves (or target a build no
 release covers yet). It clones and builds the project and wires Steam's launch
 options. Most people don't need this — the download is the same result.
 
-## 5. CrossOver (Windows BG3 in a bottle)
+## 5. Fix Windows-only mods (Mac Fix tab)
+
+Many visual mods — hair, heads, armor, weapons — are built with the Windows
+toolkit, which compiles their materials only for DirectX/Vulkan. The Mac build
+renders with **Metal**, so the first time such a mod's content actually appears
+(equipping the armor, meeting the companion, opening its head preset in
+character creation) the game **hangs on a loading spinner**.
+
+The **Mac Fix** tab finds these before they bite:
+
+1. Click **Scan Installed Mods**. Every `.pak` in your Mods folder is checked
+   for Windows-only compiled shaders.
+2. Mods marked **safe to fix** override base-game materials — one click on
+   **Fix** (or **Fix All**) removes the Windows-only override so the game uses
+   its own Metal shaders instead. The mod keeps all its models and content,
+   rendered with standard shading. The original pak is backed up automatically
+   (`~/Library/Application Support/BG3ModManagerMac/ShaderFixBackups`), and
+   **Restore Original** puts it back any time.
+3. Mods flagged red carry fully custom materials with no base-game fallback;
+   they can't be auto-fixed and will misbehave on the Mac until their author
+   ships Metal shaders. The scan tells you which they are so nothing hangs you
+   by surprise.
+
+A game update or re-downloading a mod replaces the fixed pak — just scan and
+fix again.
+
+## 6. CrossOver (Windows BG3 in a bottle)
 
 If you selected a CrossOver install, the Script Extender tab installs the
 **Windows** Script Extender into the bottle instead — a different mechanism,
 same one-click idea. The load order and mod management work identically.
 
-## 6. Profiles and backups
+## 7. Profiles and backups
 
 - **Profiles** save named load-order sets — a heavy setup and a light one, say —
   and switch between them.

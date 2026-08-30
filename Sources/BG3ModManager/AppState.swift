@@ -53,6 +53,14 @@ final class AppState: ObservableObject {
 
     // BG3SE-macOS install progress.
     @Published var isInstallingScriptExtender = false
+
+    // Mac shader-compatibility (Windows-only .bshd detection / fixing).
+    @Published var shaderScanResults: [ShaderCompatFixer.ScanResult] = []
+    @Published var isScanningShaders = false
+    @Published var shaderScanProgress: String = ""
+    @Published var shaderScanRan = false
+    /// Pak paths fixed this session or found backed up on disk.
+    @Published var fixedShaderPaks: Set<String> = []
     @Published var scriptExtenderLog: [String] = []
 
     /// State of the native-macOS Script Extender, if a checkout can be found. Drives whether the
@@ -1299,6 +1307,136 @@ final class AppState: ObservableObject {
             statusMessage = "Nexus key valid — signed in as \(name)."
         } catch {
             statusMessage = "Nexus key check failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Mac shader-compatibility fix
+
+    static var shaderFixBackupDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("BG3ModManagerMac/ShaderFixBackups", isDirectory: true)
+    }
+
+    private var baseMaterialsPak: URL? {
+        guard let app = ScriptExtenderRelease.discoverGameApp() else { return nil }
+        let pak = app.appendingPathComponent("Contents/Data/Materials.pak")
+        return FileManager.default.fileExists(atPath: pak.path) ? pak : nil
+    }
+
+    func scanShaderCompat() {
+        guard let env = activeEnvironment, !isScanningShaders else { return }
+        let folder = env.modsFolder
+        let materials = baseMaterialsPak
+        let backupDir = Self.shaderFixBackupDir
+        isScanningShaders = true
+        shaderScanProgress = "Scanning…"
+        shaderScanResults = []
+        Task.detached(priority: .userInitiated) {
+            let results = ShaderCompatFixer.scanFolder(folder, materialsPak: materials) { done, total in
+                Task { @MainActor in self.shaderScanProgress = "Scanning \(done)/\(total)…" }
+            }
+            let fixed = Set(results.map(\.pakURL.path).filter {
+                ShaderCompatFixer.backupExists(for: URL(fileURLWithPath: $0), backupDir: backupDir)
+            })
+            await MainActor.run {
+                self.shaderScanResults = results
+                self.fixedShaderPaks = fixed
+                self.isScanningShaders = false
+                self.shaderScanRan = true
+                let broken = results.filter(\.affected).count
+                self.shaderScanProgress = broken == 0
+                    ? "No Windows-only shader mods found."
+                    : "\(broken) mod\(broken == 1 ? "" : "s") with Windows-only shaders."
+                if materials == nil {
+                    self.shaderScanProgress += " (Base game not found — fix availability unknown.)"
+                }
+            }
+        }
+    }
+
+    func fixShaderCompat(_ result: ShaderCompatFixer.ScanResult) {
+        guard result.fixable else { return }
+        let backupDir = Self.shaderFixBackupDir
+        let materials = baseMaterialsPak
+        isBusy = true
+        Task.detached(priority: .userInitiated) {
+            var message: String
+            var rescanned: ShaderCompatFixer.ScanResult? = nil
+            do {
+                try ShaderCompatFixer.fix(result, backupDir: backupDir)
+                rescanned = ShaderCompatFixer.scan(pakURL: result.pakURL, materialsPak: materials)
+                message = "Fixed \(result.displayName) — original backed up."
+            } catch {
+                message = "Fix failed for \(result.displayName): \(error.localizedDescription)"
+            }
+            await MainActor.run {
+                if let rescanned, !rescanned.affected {
+                    self.fixedShaderPaks.insert(result.pakURL.path)
+                    if let i = self.shaderScanResults.firstIndex(where: { $0.id == result.id }) {
+                        self.shaderScanResults[i] = rescanned
+                    }
+                }
+                self.statusMessage = message
+                self.isBusy = false
+            }
+        }
+    }
+
+    func fixAllShaderCompat() {
+        let targets = shaderScanResults.filter { $0.fixable && !fixedShaderPaks.contains($0.pakURL.path) }
+        guard !targets.isEmpty else { return }
+        let backupDir = Self.shaderFixBackupDir
+        let materials = baseMaterialsPak
+        isBusy = true
+        statusMessage = "Fixing \(targets.count) mods…"
+        Task.detached(priority: .userInitiated) {
+            var fixedCount = 0, failed: [String] = []
+            var updates: [ShaderCompatFixer.ScanResult] = []
+            for t in targets {
+                do {
+                    try ShaderCompatFixer.fix(t, backupDir: backupDir)
+                    if let r = ShaderCompatFixer.scan(pakURL: t.pakURL, materialsPak: materials), !r.affected {
+                        updates.append(r); fixedCount += 1
+                    }
+                } catch { failed.append(t.displayName) }
+            }
+            await MainActor.run {
+                for r in updates {
+                    self.fixedShaderPaks.insert(r.pakURL.path)
+                    if let i = self.shaderScanResults.firstIndex(where: { $0.id == r.id }) {
+                        self.shaderScanResults[i] = r
+                    }
+                }
+                self.statusMessage = failed.isEmpty
+                    ? "Fixed \(fixedCount) mods — originals backed up."
+                    : "Fixed \(fixedCount); failed: \(failed.joined(separator: ", "))"
+                self.isBusy = false
+            }
+        }
+    }
+
+    func restoreShaderFix(_ result: ShaderCompatFixer.ScanResult) {
+        let backupDir = Self.shaderFixBackupDir
+        let materials = baseMaterialsPak
+        isBusy = true
+        Task.detached(priority: .userInitiated) {
+            var message: String
+            var rescanned: ShaderCompatFixer.ScanResult? = nil
+            do {
+                try ShaderCompatFixer.restore(pakURL: result.pakURL, backupDir: backupDir)
+                rescanned = ShaderCompatFixer.scan(pakURL: result.pakURL, materialsPak: materials)
+                message = "Restored original \(result.displayName)."
+            } catch {
+                message = "Restore failed for \(result.displayName): \(error.localizedDescription)"
+            }
+            await MainActor.run {
+                self.fixedShaderPaks.remove(result.pakURL.path)
+                if let rescanned, let i = self.shaderScanResults.firstIndex(where: { $0.id == result.id }) {
+                    self.shaderScanResults[i] = rescanned
+                }
+                self.statusMessage = message
+                self.isBusy = false
+            }
         }
     }
 }

@@ -15,6 +15,7 @@ struct ContentView: View {
                 SavesView().tabItem { Label("Saves", systemImage: "externaldrive.badge.timemachine") }
                 HealthView().tabItem { Label("Health", systemImage: "stethoscope") }
                 ConflictsView().tabItem { Label("Conflicts", systemImage: "exclamationmark.triangle") }
+                MacFixView().tabItem { Label("Mac Fix", systemImage: "wrench.and.screwdriver") }
                 ScriptExtenderView().tabItem { Label("Script Extender", systemImage: "terminal") }
                 SettingsView().tabItem { Label("Settings", systemImage: "gearshape") }
             }
