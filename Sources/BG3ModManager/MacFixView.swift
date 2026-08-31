@@ -8,7 +8,8 @@ struct MacFixView: View {
 
     private var results: [ShaderCompatFixer.ScanResult] { state.shaderScanResults }
     private var fixableCount: Int {
-        results.filter { $0.fixable && !state.fixedShaderPaks.contains($0.pakURL.path) }.count
+        results.filter { ($0.fixable || $0.partiallyFixable)
+            && !state.fixedShaderPaks.contains($0.pakURL.path) }.count
     }
 
     var body: some View {
@@ -98,6 +99,7 @@ struct MacFixView: View {
         let (name, color): (String, Color) =
             fixed || !r.affected ? ("checkmark.circle.fill", .green)
             : r.fixable          ? ("wrench.and.screwdriver.fill", .orange)
+            : r.partiallyFixable ? ("wrench.and.screwdriver.fill", .yellow)
             :                      ("exclamationmark.triangle.fill", .red)
         return Image(systemName: name).foregroundStyle(color).frame(width: 22)
     }
@@ -107,14 +109,16 @@ struct MacFixView: View {
             return "Fixed — materials replaced with the game's MetalReady versions. Original backed up."
         }
         let plats = r.platforms.sorted().joined(separator: "/")
-        let broken = r.materials.filter { !$0.metalReady }.count
-        var line = "\(r.shaderCount) Windows-only shaders (\(plats)), \(broken) non-MetalReady material\(broken == 1 ? "" : "s")"
+        let broken = r.brokenMaterials.count
+        var line = "\(r.shaderCount) Windows-only shaders (\(plats)), \(broken) broken material\(broken == 1 ? "" : "s")"
         if r.fixable {
-            line += " — all match base-game materials, safe to fix"
+            line += " — all repairable (base overrides or clones), safe to fix"
+        } else if r.partiallyFixable {
+            line += " — \(broken - r.customMaterialCount) repairable, \(r.customMaterialCount) truly custom (those stay broken)"
         } else if r.customMaterialCount > 0 {
-            line += " — \(r.customMaterialCount) custom material\(r.customMaterialCount == 1 ? "" : "s") with no base-game fallback; can't auto-fix"
+            line += " — all custom, no base-game counterpart; can't auto-fix"
         } else {
-            line += " — no material definitions found; can't auto-fix"
+            line += " — no repairable materials found"
         }
         return line
     }
@@ -125,11 +129,11 @@ struct MacFixView: View {
         if fixed {
             Button("Restore Original") { state.restoreShaderFix(r) }
                 .disabled(state.isBusy)
-        } else if r.fixable {
+        } else if r.fixable || r.partiallyFixable {
             Button {
                 state.fixShaderCompat(r)
             } label: {
-                Label("Fix", systemImage: "wrench.and.screwdriver")
+                Label(r.fixable ? "Fix" : "Fix (partial)", systemImage: "wrench.and.screwdriver")
             }
             .disabled(state.isBusy)
         }

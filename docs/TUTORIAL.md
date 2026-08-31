@@ -123,10 +123,13 @@ The **Mac Fix** tab finds these before they bite:
    custom textures intact. The original pak is backed up automatically
    (`~/Library/Application Support/BG3ModManagerMac/ShaderFixBackups`), and
    **Restore Original** puts it back any time.
-3. Mods flagged red carry fully custom materials with no base-game fallback;
-   they can't be auto-fixed and will misbehave on the Mac until their author
-   ships Metal shaders. The scan tells you which they are so nothing hangs you
-   by surprise.
+3. Cloned materials (per-preset copies of base materials, the usual pattern
+   in head-preset packs) are repaired with the base version re-stamped with the
+   clone's identity, and unused leftover materials are ignored. Only mods with
+   truly custom shader frameworks are flagged red — they can't be auto-fixed
+   until their author ships Metal shaders, and the scan names them so nothing
+   hangs you by surprise. Mods where only some materials are custom get a
+   partial fix that repairs everything repairable.
 
 A game update or re-downloading a mod replaces the fixed pak — just scan and
 fix again.

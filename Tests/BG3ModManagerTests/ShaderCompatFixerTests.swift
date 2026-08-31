@@ -109,8 +109,10 @@ final class ShaderCompatFolderScanTests: XCTestCase {
             let mark = r.fixable ? "FIXABLE" : "flagged(custom:\(r.customMaterialCount))"
             print("SCAN-PARITY:   \(r.displayName) [\(r.shaderCount)sh/\(r.materials.count)mat] \(mark)")
         }
-        // The Bloodletter pak was already fixed in place, so it no longer counts.
-        XCTAssertGreaterThanOrEqual(affected.count, 50)
+        // 28 mods were fixed in place earlier (they scan clean now) and
+        // unreferenced leftover materials no longer count, so the remaining
+        // affected set is the previously-flagged group.
+        XCTAssertGreaterThanOrEqual(affected.count, 20)
         XCTAssertLessThanOrEqual(affected.count, 54)
     }
 }

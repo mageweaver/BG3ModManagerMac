@@ -88,6 +88,37 @@ enum PakReader {
         return max(1, Int(header.readU16(at: 38)))
     }
 
+    /// Extract every matching file in one pass over the file table (v18 only).
+    /// Returns [path: contents]. Cheaper than repeated extractFile calls when
+    /// many files are needed from the same archive.
+    static func extractAll(from pakURL: URL, matching: (String) -> Bool) -> [String: Data] {
+        guard let file = try? PakFile(pakURL), file.size > 8 else { return [:] }
+        defer { file.close() }
+        guard let header = try? file.read(at: 0, count: 8),
+              header[0] == 0x4C, header[1] == 0x53, header[2] == 0x50, header[3] == 0x4B,
+              header.readU32(at: 4) == 18,
+              let table = try? readFileTable(file, entryStride: 272) else { return [:] }
+        var out: [String: Data] = [:]
+        let numFiles = table.count / 272
+        for i in 0..<numFiles {
+            let base = i * 272
+            let name = table.readCString(at: base, maxLen: 256)
+            guard matching(name.lowercased()) else { continue }
+            let offset1 = UInt64(table.readU32(at: base + 256))
+            let offset2 = UInt64(table.readU16(at: base + 260))
+            let realOffset = Int(offset1 | (offset2 << 32))
+            let flags = table[base + 263]
+            let sizeOnDisk = Int(table.readU32(at: base + 264))
+            let uncompressed = Int(table.readU32(at: base + 268))
+            let bytesOnDisk = sizeOnDisk != 0 ? sizeOnDisk : uncompressed
+            if let raw = try? file.read(at: realOffset, count: bytesOnDisk),
+               let d = try? decompressPayload(raw, uncompressed: uncompressed, flags: flags) {
+                out[name] = d
+            }
+        }
+        return out
+    }
+
     /// List every file path inside a pak (best-effort; supports v18, the format BG3 mods ship in).
     /// Used to detect Script Extender assets without fully unpacking.
     static func fileNames(from pakURL: URL) -> [String] {

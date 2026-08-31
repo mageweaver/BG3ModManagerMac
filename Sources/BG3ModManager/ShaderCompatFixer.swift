@@ -30,7 +30,19 @@ enum ShaderCompatFixer {
         let materialID: String?     // UUID extracted from the LSF, if found
         let overridesBaseGame: Bool // base game has a same-named material with the same UUID
         let metalReady: Bool        // the material carries the MetalReady marker
-        let basePath: String?       // the base-game material path (for replacement)
+        let basePath: String?       // base-game material path for a same-name override
+        /// A MaterialBank actually loads this file (SourceFile). Unreferenced
+        /// materials are toolkit export leftovers and are ignored entirely.
+        let referenced: Bool
+        /// The base material this is a clone of (its .lsf path in the base
+        /// game), when the name is `<BaseName>_<suffix>`. Clones are repaired
+        /// with the base payload, re-stamped with the clone's own MaterialID.
+        let cloneOfBasePath: String?
+        /// This material can be repaired: it is a same-name base override or a
+        /// clone of a base material. Only referenced, non-MetalReady materials
+        /// matter for fixing.
+        var repairable: Bool { basePath != nil || cloneOfBasePath != nil }
+        var broken: Bool { referenced && !metalReady }
     }
 
     struct ScanResult: Identifiable {
@@ -41,20 +53,27 @@ enum ShaderCompatFixer {
         let platforms: Set<String>
         let materials: [MaterialInfo]
 
-        /// Carries a material the Mac renderer will refuse: exported by the
-        /// Windows toolkit (no MetalReady marker), typically alongside
-        /// DX11/DX12/Vulkan-only compiled shaders.
+        /// Carries a REFERENCED material the Mac renderer will refuse:
+        /// exported by the Windows toolkit (no MetalReady marker), typically
+        /// alongside DX11/DX12/Vulkan-only compiled shaders. Unreferenced
+        /// leftovers do not count.
         var affected: Bool {
             shaderCount > 0 && !platforms.contains("Metal")
-                && materials.contains { !$0.metalReady }
+                && materials.contains(where: \.broken)
         }
-        /// Every broken material is an override of a base-game material, so it
-        /// can be replaced in place with the game's own MetalReady version.
+        var brokenMaterials: [MaterialInfo] { materials.filter(\.broken) }
+        /// Every broken material can be repaired (base override or clone).
         var fixable: Bool {
-            affected && materials.filter { !$0.metalReady }.allSatisfy(\.overridesBaseGame)
+            affected && brokenMaterials.allSatisfy(\.repairable)
         }
+        /// Some broken materials are repairable, some are truly novel —
+        /// fixing helps but the novel ones stay broken.
+        var partiallyFixable: Bool {
+            affected && !fixable && brokenMaterials.contains(where: \.repairable)
+        }
+        /// Truly novel broken materials: no base counterpart exists at all.
         var customMaterialCount: Int {
-            materials.filter { !$0.metalReady && !$0.overridesBaseGame }.count
+            brokenMaterials.filter { !$0.repairable }.count
         }
     }
 
@@ -86,6 +105,57 @@ enum ShaderCompatFixer {
         return index
     }
 
+    /// Printable-ASCII runs in a binary blob (LSF string tables store plain bytes).
+    private static func asciiStrings(in data: Data, minLength: Int = 10) -> [String] {
+        var out: [String] = []
+        var run: [UInt8] = []
+        for b in data {
+            if b >= 0x20 && b < 0x7F { run.append(b) }
+            else {
+                if run.count >= minLength { out.append(String(decoding: run, as: UTF8.self)) }
+                run.removeAll(keepingCapacity: true)
+            }
+        }
+        if run.count >= minLength { out.append(String(decoding: run, as: UTF8.self)) }
+        return out
+    }
+
+    /// Material paths a pak's MaterialBanks actually load (SourceFile refs).
+    /// Returned lowercased, both full paths and basenames.
+    private static func referencedMaterials(pakURL: URL) -> Set<String> {
+        let banks = PakReader.extractAll(from: pakURL) {
+            $0.hasSuffix(".lsf") && $0.contains("/content/")
+        }
+        var refs: Set<String> = []
+        let marker = Data("MaterialBank".utf8)
+        for (_, d) in banks where d.range(of: marker) != nil {
+            for str in asciiStrings(in: d) {
+                let lower = str.lowercased()
+                if lower.hasSuffix(".lsf"), lower.contains("/materials/") {
+                    refs.insert(lower)
+                    refs.insert((lower as NSString).lastPathComponent)
+                }
+            }
+        }
+        return refs
+    }
+
+    /// The base-game material this file is a clone of, when named
+    /// `<BaseName>_<suffix>`. Longest base name wins so `CHAR_Skin_Head_v3`
+    /// beats `CHAR_Skin_Head` for `CHAR_Skin_Head_v3_<uuid>`.
+    private static func cloneBase(for baseName: String, in index: [String: String]) -> String? {
+        let stem = (baseName as NSString).deletingPathExtension
+        var best: (name: String, path: String)? = nil
+        for (b, path) in index {
+            let bstem = (b as NSString).deletingPathExtension
+            guard stem.hasPrefix(bstem + "_") else { continue }
+            if best == nil || bstem.count > ((best!.name as NSString).deletingPathExtension).count {
+                best = (b, path)
+            }
+        }
+        return best?.path
+    }
+
     /// The MaterialID lives in the binary LSF as an ASCII UUID near the
     /// "MaterialID" attribute name. Byte-scanning is deliberate: a full LSF
     /// parser is not needed to answer "which material is this."
@@ -106,7 +176,8 @@ enum ShaderCompatFixer {
 
     /// Scan one mod pak. Returns nil for unreadable/non-v18/split paks.
     static func scan(pakURL: URL, materialsPak: URL?,
-                     baseIndex: [String: String]? = nil) -> ScanResult? {
+                     baseIndex: [String: String]? = nil,
+                     externalRefs: Set<String> = []) -> ScanResult? {
         guard PakReader.isArchive(pakURL), PakReader.partCount(of: pakURL) == 1 else { return nil }
         let names = PakReader.fileNames(from: pakURL)
         guard !names.isEmpty else { return nil }
@@ -128,12 +199,15 @@ enum ShaderCompatFixer {
         var materials: [MaterialInfo] = []
         if shaderCount > 0 && !platforms.contains("Metal"), let materialsPak {
             let index = baseIndex ?? baseMaterialIndex(materialsPak: materialsPak)
+            let refs = referencedMaterials(pakURL: pakURL).union(externalRefs)
             for path in materialPaths {
                 let base = (path as NSString).lastPathComponent
                 var overrides = false
                 var modID: String? = nil
                 var metalReady = false
                 let basePath = index[base]
+                let referenced = refs.contains(path.lowercased())
+                    || refs.contains(base.lowercased())
                 if let modData = try? PakReader.extractFile(from: pakURL,
                                                             matching: { $0 == path.lowercased() }) {
                     metalReady = modData.range(of: Data("MetalReady".utf8)) != nil
@@ -145,9 +219,18 @@ enum ShaderCompatFixer {
                         overrides = (modID != nil && modID == baseID)
                     }
                 }
+                // Same-name file with a different UUID still repairs like an
+                // override (base payload, re-stamped with the mod's own ID) —
+                // handled through cloneOfBasePath when overrides is false.
+                let clonePath: String? = basePath != nil && !overrides
+                    ? basePath
+                    : cloneBase(for: base, in: index)
                 materials.append(MaterialInfo(path: path, baseName: base,
                                               materialID: modID, overridesBaseGame: overrides,
-                                              metalReady: metalReady, basePath: basePath))
+                                              metalReady: metalReady,
+                                              basePath: overrides ? basePath : nil,
+                                              referenced: referenced,
+                                              cloneOfBasePath: clonePath))
             }
         }
 
@@ -168,10 +251,18 @@ enum ShaderCompatFixer {
                                                         includingPropertiesForKeys: nil) else { return [] }
         let paks = entries.filter { $0.pathExtension.lowercased() == "pak" }
         let index = materialsPak.map { baseMaterialIndex(materialsPak: $0) }
+        // Materials are sometimes hosted in one pak (a shader/asset framework)
+        // and referenced from another mod's banks, so references are collected
+        // across the whole folder before any pak is judged.
+        var allRefs: Set<String> = []
+        for pak in paks {
+            allRefs.formUnion(referencedMaterials(pakURL: pak))
+        }
         var results: [ScanResult] = []
         for (i, pak) in paks.enumerated() {
             progress?(i + 1, paks.count)
-            if let r = scan(pakURL: pak, materialsPak: materialsPak, baseIndex: index),
+            if let r = scan(pakURL: pak, materialsPak: materialsPak, baseIndex: index,
+                            externalRefs: allRefs),
                r.affected {
                 results.append(r)
             }
@@ -181,31 +272,47 @@ enum ShaderCompatFixer {
 
     // MARK: - Fix
 
-    /// Repair a fixable pak in place: every non-MetalReady material override
-    /// is replaced, at its own path, with the base game's MetalReady version of
-    /// the same material. Meshes keep their custom textures (bound by the
-    /// mod's material instances), the Windows-only .bshd blobs become inert
-    /// (the Mac renderer resolves `_Metal` shaders from the base game), and
-    /// nothing is removed — a mesh whose material file disappears renders
-    /// invisible, which is why the old strip approach was wrong. The original
-    /// pak is backed up first. Returns the backup location.
+    /// Repair a pak in place. Every referenced, non-MetalReady material that
+    /// has a base-game counterpart is replaced at its own path:
+    ///   - same-name overrides get the base payload verbatim;
+    ///   - clones (`<BaseName>_<suffix>.lsf`) get the base payload with the
+    ///     clone's own MaterialID stamped back in (same-length ASCII GUID
+    ///     substitution), so by-ID references keep resolving.
+    /// Nothing is ever removed; truly novel materials are left untouched (a
+    /// partial fix reduces the blast radius but cannot invent Metal shaders).
+    /// The original pak is backed up first; the rewrite is validated before it
+    /// replaces anything. Returns the backup location.
     @discardableResult
     static func fix(_ result: ScanResult, backupDir: URL, materialsPak: URL) throws -> URL {
-        precondition(result.fixable, "fix() requires a fixable scan result")
+        precondition(result.fixable || result.partiallyFixable,
+                     "fix() needs at least one repairable material")
         let fm = FileManager.default
         try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
 
-        // Base-game payloads for every material being replaced.
         var replacements: [String: Data] = [:]   // lowercased pak path -> payload
-        for m in result.materials where !m.metalReady && m.overridesBaseGame {
-            guard let basePath = m.basePath,
-                  let payload = try? PakReader.extractFile(from: materialsPak,
-                                                            matching: { $0 == basePath.lowercased() }),
+        var stamped: [String: String] = [:]      // path -> MaterialID expected after fix
+        for m in result.brokenMaterials where m.repairable {
+            let sourceBase = m.basePath ?? m.cloneOfBasePath!
+            guard var payload = try? PakReader.extractFile(from: materialsPak,
+                                                            matching: { $0 == sourceBase.lowercased() }),
                   payload.range(of: Data("MetalReady".utf8)) != nil else {
                 throw FixError.verifyFailed("no MetalReady base material for \(m.baseName)")
             }
+            if m.basePath == nil {
+                // Clone: keep the clone's identity so by-ID references hold.
+                guard let cloneID = m.materialID,
+                      let baseID = extractMaterialID(fromLSF: payload),
+                      cloneID.count == baseID.count else {
+                    throw FixError.verifyFailed("cannot re-stamp MaterialID for \(m.baseName)")
+                }
+                if cloneID != baseID {
+                    payload = replacingASCII(in: payload, occurrencesOf: baseID, with: cloneID)
+                    stamped[m.path.lowercased()] = cloneID
+                }
+            }
             replacements[m.path.lowercased()] = payload
         }
+        guard !replacements.isEmpty else { throw FixError.verifyFailed("nothing repairable") }
 
         let tmp = result.pakURL.deletingLastPathComponent()
             .appendingPathComponent(".\(result.pakURL.lastPathComponent).macfix.tmp")
@@ -213,8 +320,6 @@ enum ShaderCompatFixer {
 
         try rewrite(src: result.pakURL, dst: tmp, replacing: { replacements[$0.lowercased()] })
 
-        // Validate before touching the original: parseable, identity intact,
-        // and every replaced material now reads back MetalReady.
         let newNames = PakReader.fileNames(from: tmp)
         guard newNames.count == PakReader.fileNames(from: result.pakURL).count,
               !newNames.isEmpty else { throw FixError.verifyFailed("file table changed size") }
@@ -227,6 +332,10 @@ enum ShaderCompatFixer {
                   d.range(of: Data("MetalReady".utf8)) != nil else {
                 throw FixError.verifyFailed("replacement did not take for \(path)")
             }
+            if let want = stamped[path],
+               d.range(of: Data(want.utf8)) == nil {
+                throw FixError.verifyFailed("MaterialID re-stamp missing for \(path)")
+            }
         }
 
         let backup = backupDir.appendingPathComponent(result.pakURL.lastPathComponent)
@@ -235,6 +344,20 @@ enum ShaderCompatFixer {
         }
         _ = try fm.replaceItemAt(result.pakURL, withItemAt: tmp)
         return backup
+    }
+
+    /// Same-length ASCII substring substitution over binary data.
+    private static func replacingASCII(in data: Data, occurrencesOf old: String,
+                                       with new: String) -> Data {
+        precondition(old.count == new.count)
+        var out = data
+        let oldB = Data(old.utf8), newB = Data(new.utf8)
+        var searchStart = out.startIndex
+        while let r = out.range(of: oldB, in: searchStart ..< out.endIndex) {
+            out.replaceSubrange(r, with: newB)
+            searchStart = r.upperBound
+        }
+        return out
     }
 
     /// Whether a backup exists for this pak (i.e. it has been fixed before).

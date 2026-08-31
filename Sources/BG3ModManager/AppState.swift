@@ -1355,7 +1355,8 @@ final class AppState: ObservableObject {
     }
 
     func fixShaderCompat(_ result: ShaderCompatFixer.ScanResult) {
-        guard result.fixable, let materialsPak = baseMaterialsPak else { return }
+        guard result.fixable || result.partiallyFixable,
+              let materialsPak = baseMaterialsPak else { return }
         let backupDir = Self.shaderFixBackupDir
         let materials = baseMaterialsPak
         isBusy = true
@@ -1370,8 +1371,10 @@ final class AppState: ObservableObject {
                 message = "Fix failed for \(result.displayName): \(error.localizedDescription)"
             }
             await MainActor.run {
-                if let rescanned, !rescanned.affected {
-                    self.fixedShaderPaks.insert(result.pakURL.path)
+                if let rescanned {
+                    if !rescanned.affected || rescanned.brokenMaterials.allSatisfy({ !$0.repairable }) {
+                        self.fixedShaderPaks.insert(result.pakURL.path)
+                    }
                     if let i = self.shaderScanResults.firstIndex(where: { $0.id == result.id }) {
                         self.shaderScanResults[i] = rescanned
                     }
@@ -1383,7 +1386,9 @@ final class AppState: ObservableObject {
     }
 
     func fixAllShaderCompat() {
-        let targets = shaderScanResults.filter { $0.fixable && !fixedShaderPaks.contains($0.pakURL.path) }
+        let targets = shaderScanResults.filter {
+            ($0.fixable || $0.partiallyFixable) && !fixedShaderPaks.contains($0.pakURL.path)
+        }
         guard !targets.isEmpty, let materialsPak = baseMaterialsPak else { return }
         let backupDir = Self.shaderFixBackupDir
         let materials = baseMaterialsPak
@@ -1395,21 +1400,26 @@ final class AppState: ObservableObject {
             for t in targets {
                 do {
                     try ShaderCompatFixer.fix(t, backupDir: backupDir, materialsPak: materialsPak)
-                    if let r = ShaderCompatFixer.scan(pakURL: t.pakURL, materialsPak: materials), !r.affected {
-                        updates.append(r); fixedCount += 1
+                    if let r = ShaderCompatFixer.scan(pakURL: t.pakURL, materialsPak: materials) {
+                        updates.append(r)
+                        if !r.affected || r.brokenMaterials.allSatisfy({ !$0.repairable }) { fixedCount += 1 }
                     }
                 } catch { failed.append(t.displayName) }
             }
+            let failedNames = failed
+            let fixedTotal = fixedCount
             await MainActor.run {
                 for r in updates {
-                    self.fixedShaderPaks.insert(r.pakURL.path)
+                    if !r.affected || r.brokenMaterials.allSatisfy({ !$0.repairable }) {
+                        self.fixedShaderPaks.insert(r.pakURL.path)
+                    }
                     if let i = self.shaderScanResults.firstIndex(where: { $0.id == r.id }) {
                         self.shaderScanResults[i] = r
                     }
                 }
-                self.statusMessage = failed.isEmpty
-                    ? "Fixed \(fixedCount) mods — originals backed up."
-                    : "Fixed \(fixedCount); failed: \(failed.joined(separator: ", "))"
+                self.statusMessage = failedNames.isEmpty
+                    ? "Fixed \(fixedTotal) mods — originals backed up."
+                    : "Fixed \(fixedTotal); failed: \(failedNames.joined(separator: ", "))"
                 self.isBusy = false
             }
         }
