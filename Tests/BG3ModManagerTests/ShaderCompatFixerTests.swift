@@ -58,10 +58,10 @@ final class ShaderCompatFixerTests: XCTestCase {
         let backupDir = work.appendingPathComponent("backups")
         try ShaderCompatFixer.fix(result, backupDir: backupDir, materialsPak: materialsPak!)
 
-        // Nothing removed: same file table, materials swapped for MetalReady
-        // base versions in place, DX shader blobs left inert.
+        // Nothing removed: materials swapped in place, plus one injected
+        // Metal descriptor per missing path-keyed shader lookup.
         let names = PakReader.fileNames(from: copy)
-        XCTAssertEqual(names.count, 1836)
+        XCTAssertEqual(names.count, 1836 + result.missingMetalShaders.count)
         XCTAssertTrue(names.contains { $0.hasSuffix("CHAR_Hair.lsf") })
         for mat in ["char_hair.lsf", "char_skin_head_v3.lsf"] {
             let d = try PakReader.extractFile(from: copy) { $0.hasSuffix(mat) }
