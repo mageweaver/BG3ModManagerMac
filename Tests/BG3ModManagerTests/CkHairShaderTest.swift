@@ -4,8 +4,10 @@ import XCTest
 final class CkHairShaderTest: XCTestCase {
     func testInstalledCkHairGetsCloneNamedMetalShaders() throws {
         let fm = FileManager.default
-        let pak = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/Larian Studios/Baldur's Gate 3/Mods/ck_hair_collection_b5c10147-99-2czd.pak")
+        // The ORIGINAL broken pak: the installed one is repaired in place, so
+        // the durable fixture is the Mac Fix backup.
+        let pak = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("BG3ModManagerMac/ShaderFixBackups/ck_hair_collection_b5c10147-99-2czd.pak")
         guard fm.fileExists(atPath: pak.path),
               let app = ScriptExtenderRelease.discoverGameApp() else { throw XCTSkip("fixtures absent") }
         let materials = app.appendingPathComponent("Contents/Data/Materials.pak")

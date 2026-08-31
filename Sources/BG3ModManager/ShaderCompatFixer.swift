@@ -241,12 +241,26 @@ enum ShaderCompatFixer {
             for matPath in materialPaths {
                 let matName = ((matPath as NSString).lastPathComponent as NSString)
                     .deletingPathExtension
-                if index.materials[matName + ".lsf"] != nil { continue }  // base-named: base Metal covers it
-                guard let basePath = cloneBase(for: matName + ".lsf", in: index.materials) else { continue }
-                let baseName = (((basePath as NSString).lastPathComponent) as NSString)
-                    .deletingPathExtension
+                // Shader lookups are path-keyed to the MATERIAL'S OWN directory
+                // (observed live: GetShader misses named the mod's dir plus
+                // `<Material>_<VARIANT>_Metal.bshd`, base-named materials
+                // included — the base game's copies at Shared do NOT satisfy a
+                // mod-dir lookup). So every material the mod carries needs the
+                // Metal descriptor set for its shipped variant list, in the
+                // mod's own directory, named for the material:
+                //  - base-named materials: donor is the same stem;
+                //  - clones: donor is the base material's stem.
+                let baseName: String
+                if index.materials[matName + ".lsf"] != nil {
+                    baseName = matName
+                } else if let basePath = cloneBase(for: matName + ".lsf", in: index.materials) {
+                    baseName = (((basePath as NSString).lastPathComponent) as NSString)
+                        .deletingPathExtension
+                } else {
+                    continue   // truly custom material; no donor exists
+                }
                 for stem in shaderStems where stem.hasPrefix(matName + "_") {
-                    if metalStems.contains(stem) { continue }             // already injected
+                    if metalStems.contains(stem) { continue }             // already present
                     let variant = String(stem.dropFirst(matName.count))   // includes leading _
                     let donor = baseName + variant
                     if index.metalShaders[donor] != nil {
