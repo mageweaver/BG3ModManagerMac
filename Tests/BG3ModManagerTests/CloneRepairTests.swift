@@ -9,14 +9,20 @@ final class CloneRepairTests: XCTestCase {
         let pak = app.appendingPathComponent("Contents/Data/Materials.pak")
         return FileManager.default.fileExists(atPath: pak.path) ? pak : nil
     }
-    private func modsPak(_ name: String) -> URL? {
-        let u = FileManager.default.homeDirectoryForCurrentUser
+    /// The BROKEN version of a pak: the Mac Fix backup when the installed one
+    /// was already repaired, else the installed pak itself.
+    private func brokenPak(_ name: String) -> URL? {
+        let fm = FileManager.default
+        let backup = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("BG3ModManagerMac/ShaderFixBackups/\(name)")
+        if fm.fileExists(atPath: backup.path) { return backup }
+        let installed = fm.homeDirectoryForCurrentUser
             .appendingPathComponent("Documents/Larian Studios/Baldur's Gate 3/Mods/\(name)")
-        return FileManager.default.fileExists(atPath: u.path) ? u : nil
+        return fm.fileExists(atPath: installed.path) ? installed : nil
     }
 
     func testFacesOfFaerunIgnoresUnreferencedAndFixes() throws {
-        guard let pak = modsPak("aloija_new_heads_8c611d4b-75d9-2n1j.pak"),
+        guard let pak = brokenPak("aloija_new_heads_8c611d4b-75d9-2n1j.pak"),
               let materials = materialsPak else { throw XCTSkip("fixtures absent") }
         let r = try XCTUnwrap(ShaderCompatFixer.scan(pakURL: pak, materialsPak: materials))
         print("FOF: affected=\(r.affected) fixable=\(r.fixable) broken=\(r.brokenMaterials.map(\.baseName))")
@@ -37,7 +43,7 @@ final class CloneRepairTests: XCTestCase {
     }
 
     func testZ4hr4ClonesRepairWithIdRestamp() throws {
-        guard let pak = modsPak("Z4hr4_HeadPresets_837ce349-37f4-17cb-615e-6d87de019833.pak"),
+        guard let pak = brokenPak("Z4hr4_HeadPresets_837ce349-37f4-17cb-615e-6d87de019833.pak"),
               let materials = materialsPak else { throw XCTSkip("fixtures absent") }
         let r = try XCTUnwrap(ShaderCompatFixer.scan(pakURL: pak, materialsPak: materials))
         print("Z4HR4: affected=\(r.affected) fixable=\(r.fixable) partial=\(r.partiallyFixable) broken=\(r.brokenMaterials.count) custom=\(r.customMaterialCount)")
