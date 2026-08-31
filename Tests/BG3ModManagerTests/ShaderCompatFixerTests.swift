@@ -109,10 +109,13 @@ final class ShaderCompatFolderScanTests: XCTestCase {
             let mark = r.fixable ? "FIXABLE" : "flagged(custom:\(r.customMaterialCount))"
             print("SCAN-PARITY:   \(r.displayName) [\(r.shaderCount)sh/\(r.materials.count)mat] \(mark)")
         }
-        // 28 mods were fixed in place earlier (they scan clean now) and
-        // unreferenced leftover materials no longer count, so the remaining
-        // affected set is the previously-flagged group.
-        XCTAssertGreaterThanOrEqual(affected.count, 20)
+        // This runs against the live Mods folder, where fixes are applied in
+        // place — a fully repaired library legitimately reports few or zero
+        // affected mods. Assert sanity, not a count: nothing unclassified.
         XCTAssertLessThanOrEqual(affected.count, 54)
+        for r in affected {
+            XCTAssertTrue(r.fixable || r.partiallyFixable || r.customMaterialCount > 0,
+                          "\(r.displayName) affected but unclassified")
+        }
     }
 }
