@@ -45,6 +45,12 @@ enum ShaderCompatFixer {
         var broken: Bool { referenced && !metalReady }
     }
 
+    struct MissingShader {
+        let stem: String        // e.g. CHAR_Hair_<uuid>_STI_DEF
+        let dir: String         // pak directory holding this shader family
+        let baseStem: String    // base-game stem whose Metal build stands in
+    }
+
     struct ScanResult: Identifiable {
         var id: String { pakURL.path }
         let pakURL: URL
@@ -52,20 +58,27 @@ enum ShaderCompatFixer {
         let shaderCount: Int
         let platforms: Set<String>
         let materials: [MaterialInfo]
+        /// Shader families shipped DX-only whose names have no Metal build
+        /// anywhere (in-pak or base game): the engine derives shader names
+        /// from the registered material name, so clone-named materials need
+        /// clone-named Metal shaders injected. Empty when nothing is missing.
+        let missingMetalShaders: [MissingShader]
 
         /// Carries a REFERENCED material the Mac renderer will refuse:
         /// exported by the Windows toolkit (no MetalReady marker), typically
         /// alongside DX11/DX12/Vulkan-only compiled shaders. Unreferenced
         /// leftovers do not count.
         var affected: Bool {
-            shaderCount > 0 && !platforms.contains("Metal")
-                && materials.contains(where: \.broken)
+            (shaderCount > 0 && !platforms.contains("Metal")
+                && materials.contains(where: \.broken))
+            || !missingMetalShaders.isEmpty
         }
         var brokenMaterials: [MaterialInfo] { materials.filter(\.broken) }
         /// Every broken material can be repaired (base override or clone).
         var fixable: Bool {
             affected && brokenMaterials.allSatisfy(\.repairable)
         }
+        // missingMetalShaders are always fixable (base Metal bytecode stands in).
         /// Some broken materials are repairable, some are truly novel —
         /// fixing helps but the novel ones stay broken.
         var partiallyFixable: Bool {
@@ -94,13 +107,24 @@ enum ShaderCompatFixer {
 
     // MARK: - Scan
 
-    /// Base-game material index: basename -> full path inside Materials.pak.
-    /// Built once per scan; the pak has ~16k entries and listing it is cheap.
-    private static func baseMaterialIndex(materialsPak: URL) -> [String: String] {
-        var index: [String: String] = [:]
-        for name in PakReader.fileNames(from: materialsPak) where name.hasSuffix(".lsf") {
-            let base = (name as NSString).lastPathComponent
-            if index[base] == nil { index[base] = name }
+    /// Base-game indexes from Materials.pak: material basename -> path, and
+    /// the set of shader stems that have a Metal build (plus their paths).
+    struct BaseIndex {
+        var materials: [String: String] = [:]      // basename.lsf -> path
+        var metalShaders: [String: String] = [:]   // stem -> path of _Metal.bshd
+    }
+
+    private static func baseMaterialIndex(materialsPak: URL) -> BaseIndex {
+        var index = BaseIndex()
+        for name in PakReader.fileNames(from: materialsPak) {
+            if name.hasSuffix(".lsf") {
+                let base = (name as NSString).lastPathComponent
+                if index.materials[base] == nil { index.materials[base] = name }
+            } else if name.hasSuffix("_Metal.bshd") {
+                let base = (name as NSString).lastPathComponent
+                let stem = String(base.dropLast("_Metal.bshd".count))
+                if index.metalShaders[stem] == nil { index.metalShaders[stem] = name }
+            }
         }
         return index
     }
@@ -176,7 +200,7 @@ enum ShaderCompatFixer {
 
     /// Scan one mod pak. Returns nil for unreadable/non-v18/split paks.
     static func scan(pakURL: URL, materialsPak: URL?,
-                     baseIndex: [String: String]? = nil,
+                     baseIndex: BaseIndex? = nil,
                      externalRefs: Set<String> = []) -> ScanResult? {
         guard PakReader.isArchive(pakURL), PakReader.partCount(of: pakURL) == 1 else { return nil }
         let names = PakReader.fileNames(from: pakURL)
@@ -185,11 +209,19 @@ enum ShaderCompatFixer {
         var platforms: Set<String> = []
         var shaderCount = 0
         var materialPaths: [String] = []
+        var shaderStems: Set<String> = []      // name minus _<platform>.bshd
+        var metalStems: Set<String> = []       // stems that have a Metal build in-pak
+        var shaderDirs: [String: String] = [:] // stem -> directory in the pak
         for n in names {
             if n.hasSuffix(".bshd") {
                 shaderCount += 1
                 for p in ["DX11", "DX12", "Vulkan", "Metal"] where n.hasSuffix("_\(p).bshd") {
                     platforms.insert(p)
+                    let base = (n as NSString).lastPathComponent
+                    let stem = String(base.dropLast(p.count + 6))  // _<p>.bshd
+                    shaderStems.insert(stem)
+                    shaderDirs[stem] = (n as NSString).deletingLastPathComponent
+                    if p == "Metal" { metalStems.insert(stem) }
                 }
             } else if n.hasSuffix(".lsf"), n.contains("/Materials/") {
                 materialPaths.append(n)
@@ -197,15 +229,43 @@ enum ShaderCompatFixer {
         }
 
         var materials: [MaterialInfo] = []
-        if shaderCount > 0 && !platforms.contains("Metal"), let materialsPak {
-            let index = baseIndex ?? baseMaterialIndex(materialsPak: materialsPak)
+        var missing: [MissingShader] = []
+        let index = materialsPak.map { baseIndex ?? baseMaterialIndex(materialsPak: $0) }
+        if let index {
+            // The engine derives shader names from the registered material
+            // name: a clone material `CHAR_Hair_<uuid>` requests
+            // `CHAR_Hair_<uuid>_STI_DEF_Metal.bshd`, which exists nowhere —
+            // proven live: repairing the material payload alone still froze.
+            // Derive each clone's variant list from its own shipped DX
+            // shaders and pair it with the base material's Metal build.
+            for matPath in materialPaths {
+                let matName = ((matPath as NSString).lastPathComponent as NSString)
+                    .deletingPathExtension
+                if index.materials[matName + ".lsf"] != nil { continue }  // base-named: base Metal covers it
+                guard let basePath = cloneBase(for: matName + ".lsf", in: index.materials) else { continue }
+                let baseName = (((basePath as NSString).lastPathComponent) as NSString)
+                    .deletingPathExtension
+                for stem in shaderStems where stem.hasPrefix(matName + "_") {
+                    if metalStems.contains(stem) { continue }             // already injected
+                    let variant = String(stem.dropFirst(matName.count))   // includes leading _
+                    let donor = baseName + variant
+                    if index.metalShaders[donor] != nil {
+                        missing.append(MissingShader(stem: stem,
+                                                     dir: shaderDirs[stem] ?? "",
+                                                     baseStem: donor))
+                    }
+                    // No donor (e.g. _ST_BAKE editor variants): skip.
+                }
+            }
+        }
+        if shaderCount > 0 && !platforms.contains("Metal"), let materialsPak, let index {
             let refs = referencedMaterials(pakURL: pakURL).union(externalRefs)
             for path in materialPaths {
                 let base = (path as NSString).lastPathComponent
                 var overrides = false
                 var modID: String? = nil
                 var metalReady = false
-                let basePath = index[base]
+                let basePath = index.materials[base]
                 let referenced = refs.contains(path.lowercased())
                     || refs.contains(base.lowercased())
                 if let modData = try? PakReader.extractFile(from: pakURL,
@@ -224,7 +284,7 @@ enum ShaderCompatFixer {
                 // handled through cloneOfBasePath when overrides is false.
                 let clonePath: String? = basePath != nil && !overrides
                     ? basePath
-                    : cloneBase(for: base, in: index)
+                    : cloneBase(for: base, in: index.materials)
                 materials.append(MaterialInfo(path: path, baseName: base,
                                               materialID: modID, overridesBaseGame: overrides,
                                               metalReady: metalReady,
@@ -234,11 +294,14 @@ enum ShaderCompatFixer {
             }
         }
 
+        // Editor bake variants never run at runtime; do not count them.
+        missing.removeAll { $0.stem.hasSuffix("_ST_BAKE") }
         return ScanResult(pakURL: pakURL,
                           displayName: pakURL.deletingPathExtension().lastPathComponent,
                           shaderCount: shaderCount,
                           platforms: platforms,
-                          materials: materials)
+                          materials: materials,
+                          missingMetalShaders: missing)
     }
 
     /// Scan every pak in a folder. `materialsPak` is the base game's
@@ -250,7 +313,7 @@ enum ShaderCompatFixer {
         guard let entries = try? fm.contentsOfDirectory(at: modsFolder,
                                                         includingPropertiesForKeys: nil) else { return [] }
         let paks = entries.filter { $0.pathExtension.lowercased() == "pak" }
-        let index = materialsPak.map { baseMaterialIndex(materialsPak: $0) }
+        let index: BaseIndex? = materialsPak.map { baseMaterialIndex(materialsPak: $0) }
         // Materials are sometimes hosted in one pak (a shader/asset framework)
         // and referenced from another mod's banks, so references are collected
         // across the whole folder before any pak is judged.
@@ -289,6 +352,23 @@ enum ShaderCompatFixer {
         let fm = FileManager.default
         try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
 
+        let index = baseMaterialIndex(materialsPak: materialsPak)
+
+        // Clone-named shader families need Metal builds under their own names;
+        // the base game's Metal bytecode for the same family stands in (the
+        // mods' DX copies are byte-identical recompiles of base).
+        var additions: [(path: String, data: Data)] = []
+        for miss in result.missingMetalShaders {
+            guard let donorPath = index.metalShaders[miss.baseStem],
+                  let payload = try? PakReader.extractFile(from: materialsPak,
+                                                            matching: { $0 == donorPath.lowercased() })
+            else {
+                throw FixError.verifyFailed("no base Metal shader for \(miss.stem)")
+            }
+            let dir = miss.dir.isEmpty ? "" : miss.dir + "/"
+            additions.append((path: "\(dir)\(miss.stem)_Metal.bshd", data: payload))
+        }
+
         var replacements: [String: Data] = [:]   // lowercased pak path -> payload
         var stamped: [String: String] = [:]      // path -> MaterialID expected after fix
         for m in result.brokenMaterials where m.repairable {
@@ -312,17 +392,26 @@ enum ShaderCompatFixer {
             }
             replacements[m.path.lowercased()] = payload
         }
-        guard !replacements.isEmpty else { throw FixError.verifyFailed("nothing repairable") }
+        guard !replacements.isEmpty || !additions.isEmpty else {
+            throw FixError.verifyFailed("nothing repairable")
+        }
 
         let tmp = result.pakURL.deletingLastPathComponent()
             .appendingPathComponent(".\(result.pakURL.lastPathComponent).macfix.tmp")
         defer { try? fm.removeItem(at: tmp) }
 
-        try rewrite(src: result.pakURL, dst: tmp, replacing: { replacements[$0.lowercased()] })
+        try rewrite(src: result.pakURL, dst: tmp,
+                    replacing: { replacements[$0.lowercased()] },
+                    adding: additions)
 
         let newNames = PakReader.fileNames(from: tmp)
-        guard newNames.count == PakReader.fileNames(from: result.pakURL).count,
-              !newNames.isEmpty else { throw FixError.verifyFailed("file table changed size") }
+        guard newNames.count == PakReader.fileNames(from: result.pakURL).count + additions.count,
+              !newNames.isEmpty else { throw FixError.verifyFailed("file table size mismatch") }
+        for a in additions {
+            guard newNames.contains(where: { $0 == a.path }) else {
+                throw FixError.verifyFailed("injected shader missing: \(a.path)")
+            }
+        }
         let hadMeta = (try? PakReader.extractMetaLSX(from: result.pakURL)) != nil
         if hadMeta, (try? PakReader.extractMetaLSX(from: tmp)) == nil {
             throw FixError.verifyFailed("meta.lsx unreadable after rewrite")
@@ -385,7 +474,9 @@ enum ShaderCompatFixer {
     /// which `replacing` returns data (stored uncompressed at the same path).
     /// All other payloads are copied byte-for-byte; only offsets, the sizes of
     /// replaced entries, and the header's file-list fields change.
-    private static func rewrite(src: URL, dst: URL, replacing: (String) -> Data?) throws {
+    private static func rewrite(src: URL, dst: URL,
+                                replacing: (String) -> Data?,
+                                adding: [(path: String, data: Data)] = []) throws {
         let inHandle = try FileHandle(forReadingFrom: src)
         defer { try? inHandle.close() }
         let fileSize = Int(try inHandle.seekToEnd())
@@ -449,9 +540,24 @@ enum ShaderCompatFixer {
             writeOffset += blob.count
         }
 
+        for add in adding {
+            guard add.path.utf8.count <= 255 else { throw FixError.corrupt }
+            try out.write(contentsOf: add.data)
+            var entry = Data(count: 272)
+            let nameBytes = Array(add.path.utf8)
+            entry.replaceSubrange(0 ..< nameBytes.count, with: nameBytes)
+            entry.putU32(UInt32(writeOffset & 0xFFFF_FFFF), at: 256)
+            entry.putU16(UInt16((writeOffset >> 32) & 0xFFFF), at: 260)
+            entry[263] = 0                                   // stored
+            entry.putU32(UInt32(add.data.count), at: 264)
+            entry.putU32(UInt32(add.data.count), at: 268)
+            newTable.append(entry)
+            writeOffset += add.data.count
+        }
+
         let newCompressed = try lz4BlockCompress(newTable)
         var listSection = Data()
-        listSection.appendU32(UInt32(numFiles))
+        listSection.appendU32(UInt32(numFiles + adding.count))
         listSection.appendU32(UInt32(newCompressed.count))
         listSection.append(newCompressed)
         try out.write(contentsOf: listSection)
