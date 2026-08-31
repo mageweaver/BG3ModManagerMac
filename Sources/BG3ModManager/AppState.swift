@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import CryptoKit
 import AppKit
 
 /// The single source of truth the UI binds to. Owns the active environment, the mod list, the load
@@ -1354,9 +1355,22 @@ final class AppState: ObservableObject {
         }
     }
 
+
+    /// After a pak is rewritten (fixed or restored), bring its modsettings MD5
+    /// back in line with the file on disk so the game trusts the entry.
+    nonisolated private static func syncModSettingsMD5(pakURL: URL, modSettings: URL?) {
+        guard let modSettings else { return }
+        guard let metaData = try? PakReader.extractMetaLSX(from: pakURL),
+              let meta = MetaParser.parse(metaData),
+              let data = try? Data(contentsOf: pakURL) else { return }
+        let md5 = Insecure.MD5.hash(data: data).map { String(format: "%02hhx", $0) }.joined()
+        ModSettings.syncMD5(moduleUUID: meta.uuid, md5: md5, in: modSettings)
+    }
+
     func fixShaderCompat(_ result: ShaderCompatFixer.ScanResult) {
         guard result.fixable || result.partiallyFixable,
               let materialsPak = baseMaterialsPak else { return }
+        let settingsFile = activeEnvironment?.modSettingsFile
         let backupDir = Self.shaderFixBackupDir
         let materials = baseMaterialsPak
         isBusy = true
@@ -1365,6 +1379,7 @@ final class AppState: ObservableObject {
             var rescanned: ShaderCompatFixer.ScanResult? = nil
             do {
                 try ShaderCompatFixer.fix(result, backupDir: backupDir, materialsPak: materialsPak)
+                Self.syncModSettingsMD5(pakURL: result.pakURL, modSettings: settingsFile)
                 rescanned = ShaderCompatFixer.scan(pakURL: result.pakURL, materialsPak: materials)
                 message = "Fixed \(result.displayName) — original backed up."
             } catch {
@@ -1390,6 +1405,7 @@ final class AppState: ObservableObject {
             ($0.fixable || $0.partiallyFixable) && !fixedShaderPaks.contains($0.pakURL.path)
         }
         guard !targets.isEmpty, let materialsPak = baseMaterialsPak else { return }
+        let settingsFile = activeEnvironment?.modSettingsFile
         let backupDir = Self.shaderFixBackupDir
         let materials = baseMaterialsPak
         isBusy = true
@@ -1400,6 +1416,7 @@ final class AppState: ObservableObject {
             for t in targets {
                 do {
                     try ShaderCompatFixer.fix(t, backupDir: backupDir, materialsPak: materialsPak)
+                    Self.syncModSettingsMD5(pakURL: t.pakURL, modSettings: settingsFile)
                     if let r = ShaderCompatFixer.scan(pakURL: t.pakURL, materialsPak: materials) {
                         updates.append(r)
                         if !r.affected || r.brokenMaterials.allSatisfy({ !$0.repairable }) { fixedCount += 1 }
@@ -1426,6 +1443,7 @@ final class AppState: ObservableObject {
     }
 
     func restoreShaderFix(_ result: ShaderCompatFixer.ScanResult) {
+        let settingsFile = activeEnvironment?.modSettingsFile
         let backupDir = Self.shaderFixBackupDir
         let materials = baseMaterialsPak
         isBusy = true
@@ -1434,6 +1452,7 @@ final class AppState: ObservableObject {
             var rescanned: ShaderCompatFixer.ScanResult? = nil
             do {
                 try ShaderCompatFixer.restore(pakURL: result.pakURL, backupDir: backupDir)
+                Self.syncModSettingsMD5(pakURL: result.pakURL, modSettings: settingsFile)
                 rescanned = ShaderCompatFixer.scan(pakURL: result.pakURL, materialsPak: materials)
                 message = "Restored original \(result.displayName)."
             } catch {

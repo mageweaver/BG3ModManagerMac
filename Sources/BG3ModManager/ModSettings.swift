@@ -64,6 +64,35 @@ enum ModSettings {
         return reader.entries
     }
 
+    /// Surgically update one registered mod's MD5 to match its pak on disk.
+    ///
+    /// The game records each pak's real checksum in modsettings.lsx; after the
+    /// Mac Fix rewrites a pak (or restores its original), a stale MD5 makes the
+    /// game distrust the entry. This edits ONLY that attribute, preserving the
+    /// rest of the file byte-for-byte — the file may have been written by the
+    /// game itself, and a full rewrite would churn entries we don't manage.
+    /// Returns true if the entry was found and now carries `md5`.
+    @discardableResult
+    static func syncMD5(moduleUUID: String, md5: String, in url: URL) -> Bool {
+        guard var text = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        // Locate the ModuleShortDesc block containing this UUID.
+        guard let uuidRange = text.range(of: moduleUUID, options: .caseInsensitive) else { return false }
+        guard let blockStart = text.range(of: "<node id=\"ModuleShortDesc\">",
+                                          options: .backwards,
+                                          range: text.startIndex ..< uuidRange.lowerBound),
+              let blockEnd = text.range(of: "</node>",
+                                        range: uuidRange.upperBound ..< text.endIndex) else { return false }
+        let block = String(text[blockStart.lowerBound ..< blockEnd.upperBound])
+        guard let mdStart = block.range(of: "id=\"MD5\" type=\"LSString\" value=\"") else { return false }
+        guard let mdEnd = block.range(of: "\"", range: mdStart.upperBound ..< block.endIndex) else { return false }
+        var newBlock = block
+        newBlock.replaceSubrange(mdStart.upperBound ..< mdEnd.lowerBound, with: md5)
+        if newBlock == block { return true }   // already current
+        text.replaceSubrange(blockStart.lowerBound ..< blockEnd.upperBound, with: newBlock)
+        do { try text.data(using: .utf8)!.write(to: url, options: .atomic); return true }
+        catch { return false }
+    }
+
     // MARK: Write
 
     /// Write a new modsettings.lsx for the given ordered enabled mods. Backs up the previous file.
