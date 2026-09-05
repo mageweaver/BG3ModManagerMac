@@ -339,14 +339,27 @@ struct ScriptExtenderView: View {
     private var binaryReleaseBox: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let rel = state.macSERelease, rel.isReady {
-                infoBox(color: .green, icon: "checkmark.seal.fill",
-                        title: "Script Extender installed",
-                        body: "libbg3se.dylib is in the game and Gatekeeper-cleared. Launch Baldur's Gate 3 through Steam — it loads the extender on its own.")
+                if state.macSEUpdateAvailable, let latest = state.macSELatest {
+                    infoBox(color: .orange, icon: "arrow.down.circle.fill",
+                            title: "Script Extender update available: \(latest.tag)",
+                            body: "\(installedVersionLabel(rel)) is installed. Update replaces the dylib in the game bundle; quit Baldur's Gate 3 first so the new build loads next launch.")
+                } else {
+                    infoBox(color: .green, icon: "checkmark.seal.fill",
+                            title: "Script Extender installed",
+                            body: "libbg3se.dylib is in the game and Gatekeeper-cleared. Launch Baldur's Gate 3 through Steam — it loads the extender on its own.")
+                }
                 releaseDetails(rel)
+                latestReleaseLine
                 HStack {
-                    Button("Update / Reinstall") { Task { await state.installSEFromRelease() } }
-                        .disabled(state.isDownloadingSE)
-                    Button("Remove") { state.uninstallSERelease() }
+                    if state.isDownloadingSE {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Downloading…") }
+                    } else if state.macSEUpdateAvailable, let latest = state.macSELatest {
+                        Button("Update to \(latest.tag)") { Task { await state.installSEFromRelease() } }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Update / Reinstall") { Task { await state.installSEFromRelease() } }
+                    }
+                    Button("Remove") { state.uninstallSERelease() }.disabled(state.isDownloadingSE)
                     Spacer()
                     Button("Releases") { NSWorkspace.shared.open(ScriptExtenderRelease.releasesPage) }
                 }
@@ -360,6 +373,7 @@ struct ScriptExtenderView: View {
                 infoBox(color: .blue, icon: "arrow.down.circle.fill",
                         title: "Install the Script Extender (recommended)",
                         body: "Download the pre-built extender and drop it straight into Baldur's Gate 3. No Terminal, no building. Targets game build \(ScriptExtenderRelease.targetGameBuild).")
+                latestReleaseLine
                 HStack {
                     Button {
                         Task { await state.installSEFromRelease() }
@@ -386,6 +400,13 @@ struct ScriptExtenderView: View {
                 Button("View install log") { showingInstallLog = true }.font(.callout)
             }
         }
+        .task { await state.checkSELatest() }
+    }
+
+    /// "v0.47.2", or what we can honestly say when the file does not tell us.
+    private func installedVersionLabel(_ rel: ScriptExtenderRelease.State) -> String {
+        guard let v = rel.installedVersion else { return "An unknown version" }
+        return "v\(v)"
     }
 
     private func releaseDetails(_ rel: ScriptExtenderRelease.State) -> some View {
@@ -394,6 +415,15 @@ struct ScriptExtenderView: View {
                 Text(d.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
             HStack(spacing: 10) {
+                if let v = rel.installedVersion {
+                    Text("v\(v)").fontWeight(.semibold)
+                        .help(rel.versionSource == .dylib
+                              ? "Read from the dylib's own header."
+                              : "The release this app installed; the file is unchanged since.")
+                } else {
+                    Text("version unknown")
+                        .help("Older releases don't carry their version in the file, and this dylib wasn't installed by this app. Update / Reinstall puts the latest release in and records it.")
+                }
                 if rel.installedBytes > 0 {
                     Text("\(ByteCountFormatter.string(fromByteCount: rel.installedBytes, countStyle: .file))")
                 }
@@ -401,6 +431,37 @@ struct ScriptExtenderView: View {
                     Text("installed \(at.formatted(date: .abbreviated, time: .shortened))")
                 }
             }.font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// One line about the newest GitHub release, next to whatever is installed.
+    @ViewBuilder
+    private var latestReleaseLine: some View {
+        if let latest = state.macSELatest {
+            HStack(spacing: 6) {
+                Text("Latest release: \(latest.tag)")
+                if let installed = state.macSERelease?.installedVersion {
+                    if state.macSEUpdateAvailable {
+                        Text("— newer than the installed v\(installed)").foregroundStyle(.orange)
+                    } else if ScriptExtenderRelease.isNewer(installed, than: latest.tag) {
+                        Text("— installed v\(installed) is ahead of it (a local build)")
+                    } else {
+                        Label("up to date", systemImage: "checkmark").foregroundStyle(.green)
+                    }
+                }
+                Button { NSWorkspace.shared.open(latest.pageURL) } label: { Text("notes") }
+                    .buttonStyle(.link)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        } else if state.isCheckingSELatest {
+            HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Checking the latest release…") }
+                .font(.caption).foregroundStyle(.secondary)
+        } else if let err = state.macSELatestError {
+            HStack(spacing: 6) {
+                Text("Couldn't check the latest release — \(err)").lineLimit(2)
+                Button("Retry") { Task { await state.checkSELatest(force: true) } }.buttonStyle(.link)
+            }
+            .font(.caption).foregroundStyle(.secondary)
         }
     }
 

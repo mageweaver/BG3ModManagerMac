@@ -4,21 +4,30 @@
 # so the Nexus "Mod Manager Download" button hands off to this app — no Xcode project needed,
 # just the Xcode command-line tools.
 #
-# Usage:  ./build_app.sh            (release build → ./BG3 Mod Manager.app)
-#         ./build_app.sh --debug    (faster debug build)
+# Usage:  ./build_app.sh              (release build → ./BG3 Mod Manager.app)
+#         ./build_app.sh --debug      (faster debug build)
+#         ./build_app.sh --universal  (Apple Silicon + Intel — what the GitHub releases ship)
 #
 set -euo pipefail
 
 APP_NAME="BG3 Mod Manager"
 BIN_NAME="BG3ModManagerMac"
 CONFIG="release"
-[ "${1:-}" = "--debug" ] && CONFIG="debug"
+ARCHS=()
+for arg in "$@"; do
+  case "$arg" in
+    --debug)     CONFIG="debug" ;;
+    --universal) ARCHS=(--arch arm64 --arch x86_64) ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 cd "$(dirname "$0")"
 
-echo "▶ Compiling ($CONFIG)…"
-swift build -c "$CONFIG"
-BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+# ${ARCHS[@]+…} keeps an empty array from tripping `set -u` on macOS's bash 3.2.
+echo "▶ Compiling ($CONFIG${ARCHS[@]+, universal})…"
+swift build -c "$CONFIG" ${ARCHS[@]+"${ARCHS[@]}"}
+BIN_DIR="$(swift build -c "$CONFIG" ${ARCHS[@]+"${ARCHS[@]}"} --show-bin-path)"
 
 if [ ! -f "$BIN_DIR/$BIN_NAME" ]; then
   echo "✗ Build did not produce $BIN_DIR/$BIN_NAME" >&2

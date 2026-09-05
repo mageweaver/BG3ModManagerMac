@@ -72,6 +72,19 @@ final class AppState: ObservableObject {
     /// the dylib copied straight into the game bundle, no build required.
     @Published var macSERelease: ScriptExtenderRelease.State?
     @Published var isDownloadingSE = false
+    /// The newest BG3SE-macOS release on GitHub, looked up when the Script
+    /// Extender tab is shown; nil until then or when offline.
+    @Published var macSELatest: ScriptExtenderRelease.Release?
+    @Published var macSELatestError: String?
+    @Published var isCheckingSELatest = false
+    private var macSELatestCheckedAt: Date?
+
+    /// True when the installed extender's version is known and the latest
+    /// release is newer. Unknown versions never claim an update is due.
+    var macSEUpdateAvailable: Bool {
+        guard let installed = macSERelease?.installedVersion, let latest = macSELatest else { return false }
+        return ScriptExtenderRelease.isNewer(latest.tag, than: installed)
+    }
 
     // Dependency / compatibility health of the current load order (recomputed on every refresh).
     @Published var healthReport = HealthChecker.Report(issues: [], checkedCount: 0)
@@ -240,17 +253,41 @@ final class AppState: ObservableObject {
         scriptExtenderLog = []
         defer { isDownloadingSE = false }
         do {
-            let state = try await ScriptExtenderRelease.installLatest(gameApp: gameApp) { [weak self] line in
+            // A fresh lookup, not the cached one: "Update" must get whatever is
+            // newest right now, even if the tab was opened an hour ago.
+            let result = try await ScriptExtenderRelease.installLatest(gameApp: gameApp) { [weak self] line in
                 self?.scriptExtenderLog.append(line)
             }
-            macSERelease = state
-            statusMessage = state.isReady
-                ? "Script Extender installed. Launch Baldur's Gate 3 through Steam."
+            macSERelease = result.state
+            macSELatest = result.release
+            macSELatestError = nil
+            macSELatestCheckedAt = Date()
+            statusMessage = result.state.isReady
+                ? "Script Extender \(result.release.tag) installed. Launch Baldur's Gate 3 through Steam."
                 : "Downloaded, but something's off — see the log."
         } catch {
             scriptExtenderLog.append("")
             scriptExtenderLog.append("Failed: \(error.localizedDescription)")
             statusMessage = error.localizedDescription
+        }
+    }
+
+    /// Look up the newest release so the tab can say whether the installed
+    /// extender is current. One unauthenticated GitHub call; cached for ten
+    /// minutes because the tab re-appears far more often than releases do.
+    func checkSELatest(force: Bool = false) async {
+        if !force, let at = macSELatestCheckedAt, Date().timeIntervalSince(at) < 600, macSELatest != nil {
+            return
+        }
+        guard !isCheckingSELatest else { return }
+        isCheckingSELatest = true
+        defer { isCheckingSELatest = false }
+        do {
+            macSELatest = try await ScriptExtenderRelease.latestRelease()
+            macSELatestError = nil
+            macSELatestCheckedAt = Date()
+        } catch {
+            macSELatestError = error.localizedDescription
         }
     }
 

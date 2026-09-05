@@ -39,9 +39,26 @@ enum ScriptExtenderRelease {
         var installedAt: Date?
         /// Still quarantined? Then Gatekeeper will refuse to load it.
         var quarantined = false
+        /// "0.47.2" — see `VersionSource` for where it came from; nil when
+        /// nothing on disk says.
+        var installedVersion: String?
+        var versionSource: VersionSource = .none
 
         var isInstalled: Bool { installedDylib != nil }
         var isReady: Bool { isInstalled && !quarantined }
+    }
+
+    /// How `State.installedVersion` was learned.
+    enum VersionSource: Equatable {
+        /// Read out of the dylib's own header (`LC_ID_DYLIB`); the extender
+        /// stamps its version there from the build after v0.47.2 on. Always
+        /// describes the file that is actually in the game bundle.
+        case dylib
+        /// This app installed the release and the file is unchanged since —
+        /// same size and modification date as when it was written.
+        case installRecord
+        /// Nothing to go on: an older release, or a dylib put there by hand.
+        case none
     }
 
     /// One GitHub release and the dylib-bearing asset we can install from it.
@@ -124,7 +141,87 @@ enum ScriptExtenderRelease {
         state.installedAt = values?.contentModificationDate
         state.installedBytes = Int64(values?.fileSize ?? 0)
         state.quarantined = hasQuarantine(dylib)
+
+        if let stamped = MachOVersion.read(at: dylib) {
+            state.installedVersion = stamped
+            state.versionSource = .dylib
+        } else if let record = InstallRecord.load(),
+                  record.matches(bytes: state.installedBytes, modifiedAt: state.installedAt) {
+            state.installedVersion = record.version
+            state.versionSource = .installRecord
+        }
         return state
+    }
+
+    // MARK: Versions
+
+    /// Which release this app last installed, and what the file looked like
+    /// right after. Lets the tab name the version of a release that predates
+    /// the header stamp — as long as the file has not been replaced since.
+    struct InstallRecord: Equatable {
+        var version: String
+        var bytes: Int64
+        var modifiedAt: Date?
+
+        private static let key = "macSEInstallRecord"
+
+        func matches(bytes: Int64, modifiedAt: Date?) -> Bool {
+            guard bytes == self.bytes, bytes > 0 else { return false }
+            switch (modifiedAt, self.modifiedAt) {
+            case let (a?, b?): return abs(a.timeIntervalSince(b)) < 1   // HFS+/APFS granularity
+            case (nil, nil):   return true
+            default:           return false
+            }
+        }
+
+        static func load(from defaults: UserDefaults = .standard) -> InstallRecord? {
+            guard let dict = defaults.dictionary(forKey: key),
+                  let version = dict["version"] as? String,
+                  let bytes = (dict["bytes"] as? NSNumber)?.int64Value else { return nil }
+            let modified = (dict["modifiedAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+            return InstallRecord(version: version, bytes: bytes, modifiedAt: modified)
+        }
+
+        func save(to defaults: UserDefaults = .standard) {
+            var dict: [String: Any] = ["version": version, "bytes": NSNumber(value: bytes)]
+            if let modifiedAt { dict["modifiedAt"] = NSNumber(value: modifiedAt.timeIntervalSince1970) }
+            defaults.set(dict, forKey: Self.key)
+        }
+
+        static func clear(from defaults: UserDefaults = .standard) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    /// "v0.47.2" → "0.47.2". Release tags carry the `v`; the dylib header and
+    /// the install record do not.
+    static func version(fromTag tag: String) -> String {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("v") || trimmed.hasPrefix("V") ? String(trimmed.dropFirst()) : trimmed
+    }
+
+    /// Numeric, component-wise comparison ("0.47.10" is newer than "0.47.9";
+    /// "0.47" reads as "0.47.0"). Anything that is not a dotted number after
+    /// an optional leading `v` compares as unknown → false, so a malformed tag
+    /// never nags anyone to "update".
+    static func isNewer(_ candidate: String, than installed: String) -> Bool {
+        guard let a = components(of: candidate), let b = components(of: installed) else { return false }
+        let width = max(a.count, b.count)
+        let pa = a + Array(repeating: 0, count: width - a.count)
+        let pb = b + Array(repeating: 0, count: width - b.count)
+        for (x, y) in zip(pa, pb) where x != y { return x > y }
+        return false
+    }
+
+    private static func components(of version: String) -> [Int]? {
+        let parts = self.version(fromTag: version).split(separator: ".", omittingEmptySubsequences: false)
+        guard !parts.isEmpty, parts.count <= 4 else { return nil }
+        var out: [Int] = []
+        for part in parts {
+            guard let n = Int(part), n >= 0 else { return nil }
+            out.append(n)
+        }
+        return out
     }
 
     /// True if the file still carries `com.apple.quarantine`.
@@ -202,15 +299,25 @@ enum ScriptExtenderRelease {
         }
     }
 
+    /// What `installLatest` leaves behind: the bundle state plus the release
+    /// it came from, so the caller can show "latest" without a second lookup.
+    struct InstallResult {
+        var state: State
+        var release: Release
+    }
+
     /// Download the latest release and install its dylib into the game bundle,
     /// then clear quarantine. `log` receives human-readable progress lines.
+    /// Pass `release` to install one already looked up; nil fetches the latest.
     ///
-    /// Returns the post-install `State`. Re-runnable: an existing dylib is
-    /// replaced (a `.prev` backup is kept the first time).
+    /// Re-runnable: an existing dylib is replaced (a `.prev` backup is kept
+    /// the first time).
     @discardableResult
     static func installLatest(gameApp: URL,
-                              log: @escaping (String) -> Void) async throws -> State {
-        let release = try await latestRelease()
+                              release known: Release? = nil,
+                              log: @escaping (String) -> Void) async throws -> InstallResult {
+        let release: Release
+        if let known { release = known } else { release = try await latestRelease() }
         log("Latest release: \(release.name) (\(release.tag))")
         log("Downloading \(release.assetName)…")
 
@@ -241,10 +348,18 @@ enum ScriptExtenderRelease {
         } catch {
             throw InstallError.copyFailed(error.localizedDescription)
         }
-        log("Installed into \(dest.path)")
+        log("Installed \(release.tag) into \(dest.path)")
 
         // Strip quarantine so Gatekeeper allows the unsigned dylib.
         clearQuarantine(dest, log: log)
+
+        // Remember which release this file is, for dylibs that predate the
+        // header stamp. Keyed to the file as written, so a later hand-copied
+        // or locally built dylib is not mislabelled with this tag.
+        let attrs = try? dest.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        InstallRecord(version: version(fromTag: release.tag),
+                      bytes: Int64(attrs?.fileSize ?? 0),
+                      modifiedAt: attrs?.contentModificationDate).save()
 
         let state = inspect(gameApp: gameApp)
         if state.isReady {
@@ -252,7 +367,7 @@ enum ScriptExtenderRelease {
             log("Done. Launch Baldur's Gate 3 through Steam; it loads the extender on its own.")
             log("Targets game build \(targetGameBuild) — the extender idles on any other build.")
         }
-        return state
+        return InstallResult(state: state, release: release)
     }
 
     /// Pull `libbg3se.dylib` out of a downloaded file that is either the dylib
@@ -308,6 +423,7 @@ enum ScriptExtenderRelease {
         let dest = dylibDestination(in: gameApp)
         guard fm.fileExists(atPath: dest.path) else { log("Nothing installed."); return }
         try? fm.removeItem(at: dest)
+        InstallRecord.clear()
         let backup = dest.appendingPathExtension("prev")
         if fm.fileExists(atPath: backup.path) {
             try? fm.moveItem(at: backup, to: dest)

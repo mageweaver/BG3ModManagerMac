@@ -89,6 +89,13 @@ it for you.
 Once it's green, enable your SE-dependent mods in the load order and launch.
 MCM opens in-game via its keybind.
 
+The green box names the installed version and the latest release on GitHub.
+When a newer one is out, the box turns orange and the button becomes
+**Update to vX.Y.Z** — one click, same steps as the first install. (Release
+files up to v0.47.2 carry no version inside them, so one copied in by hand
+shows as "version unknown" until you reinstall through the app, which
+remembers what it installed.)
+
 ### If it doesn't load
 
 - **Nothing in the install log / game ignores it** — re-run **Download &
